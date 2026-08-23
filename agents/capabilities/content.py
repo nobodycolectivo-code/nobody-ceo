@@ -22,6 +22,7 @@ import anthropic
 
 from brain.content.store import ContentItem, already_used_source_ids, insert, mark_rendered
 from brain.db import connect
+from brain.decisions.store import Decision, record as record_decision
 from integrations.pexels.client import best_vertical_file, download_video, search_vertical_video
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -102,32 +103,128 @@ def _ffprobe_duration(path: Path) -> float | None:
         return None
 
 
-def _get_stock_background(album_row) -> Path | None:
-    """Video de stock vertical de Pexels para el álbum, cacheado en disco
-    (uno por álbum — se reutiliza entre tracks del mismo álbum, así no se
-    gasta una llamada de API por cada reel). None si Pexels falla o no
-    hay resultados; el llamador debe manejar ese caso con el fallback de
-    portada/tarjeta de marca."""
-    cache_path = STOCK_CACHE_DIR / f"{album_row['id']}.mp4"
-    if cache_path.exists():
-        return cache_path
-
-    query = GENRE_TO_STOCK_QUERY.get(album_row["genre_tag"], DEFAULT_STOCK_QUERY)
+def _creative_brief(track_row, album_row) -> dict:
+    """El CEO actuando como curador: para ESTA canción específica —no una
+    fórmula fija por género— decide un hook de apertura y varias
+    búsquedas de video distintas entre sí. Si Claude falla, cae a un
+    brief determinístico de una sola búsqueda por género (nunca bloquea
+    la generación), pero el camino normal es una decisión nueva cada vez."""
     try:
-        videos = search_vertical_video(query)
-        if not videos:
-            return None
-        file = best_vertical_file(videos[0])
-        if not file or not file.get("link"):
-            return None
-        return download_video(file["link"], cache_path)
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        resp = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=300,
+            system=(
+                "Eres el curador creativo de NØBØĐ¥ Records. Para cada canción "
+                "diseñas un reel corto pensado para retener atención y volverse "
+                "viral: un hook de apertura y una selección de video de stock "
+                "que capture el mood específico de ESA canción, no una fórmula "
+                "genérica de género. Evita repetir la misma idea visual entre "
+                "las búsquedas — cada una debe aportar una imagen distinta. "
+                "Prefiere escenas luminosas y con movimiento visible (nada de "
+                "fondos negros o casi estáticos) — el video es el fondo de un "
+                "reel vertical y tiene que sostener la atención.\n\n"
+                "Responde ÚNICAMENTE el JSON crudo, sin bloque de código markdown "
+                "(nada de ```), sin texto antes ni después. Estructura EXACTA, "
+                "sin excederla:\n"
+                '{"hook": "máximo 6 palabras en español, sin punto final", '
+                '"clip_queries": ["query 1", "query 2", "query 3"], '
+                '"mood": "una palabra"}\n'
+                "clip_queries debe tener EXACTAMENTE 3 elementos, cada uno una "
+                "búsqueda corta en inglés (máximo 5 palabras)."
+            ),
+            messages=[{"role": "user", "content": (
+                f"Canción: {track_row['title']}. Álbum: {album_row['title']}. "
+                f"Género/mood conocido: {album_row['genre_tag'] or 'ambient instrumental'}."
+            )}],
+        )
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            text = text[4:] if text.startswith("json") else text
+        brief = json.loads(text.strip())
+        if not brief.get("clip_queries"):
+            raise ValueError("brief sin clip_queries")
+        brief["source"] = "claude"
+        return brief
+    except Exception:
+        fallback_query = GENRE_TO_STOCK_QUERY.get(album_row["genre_tag"], DEFAULT_STOCK_QUERY)
+        return {
+            "hook": track_row["title"],
+            "clip_queries": [fallback_query],
+            "mood": album_row["genre_tag"] or "ambient",
+            "source": "fallback",
+        }
+
+
+MIN_CLIP_BRIGHTNESS = 40  # 0-255; por debajo de esto, el clip se ve casi negro
+
+
+def _average_brightness(video_path: Path, at_seconds: float = 2.0) -> float | None:
+    """Brillo promedio de un frame de muestra (escala de grises, 0-255).
+    None si no se pudo leer el archivo."""
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-ss", str(at_seconds), "-i", str(video_path),
+                "-frames:v", "1", "-vf", "scale=32:32", "-pix_fmt", "gray",
+                "-f", "rawvideo", "-",
+            ],
+            capture_output=True, timeout=20,
+        )
+        data = result.stdout
+        return sum(data) / len(data) if data else None
     except Exception:
         return None
 
 
+def _get_stock_clips(track_row, queries: list[str], max_clips: int = 4) -> list[Path]:
+    """Descarga (o reutiliza de cache) un clip vertical por cada query del
+    brief creativo — cacheado por track, porque el brief es por canción,
+    no por álbum. Prueba hasta 3 resultados por query y descarta los que
+    salen casi negros (pasa en la práctica con clips tipo 'cymatics' o
+    de fondo oscuro) antes de conformarse con uno."""
+    clips: list[Path] = []
+    safe_id = track_row["id"].replace("/", "-")
+    for i, query in enumerate(queries[:max_clips]):
+        cache_path = STOCK_CACHE_DIR / f"{safe_id}-{i}.mp4"
+        if cache_path.exists():
+            clips.append(cache_path)
+            continue
+        try:
+            videos = search_vertical_video(query, per_page=3)
+        except Exception:
+            continue
+        chosen = None
+        for video in videos:
+            file = best_vertical_file(video)
+            if not file or not file.get("link"):
+                continue
+            try:
+                candidate = download_video(file["link"], cache_path.with_suffix(".tmp.mp4"))
+            except Exception:
+                continue
+            brightness = _average_brightness(candidate)
+            if brightness is None or brightness >= MIN_CLIP_BRIGHTNESS:
+                candidate.replace(cache_path)
+                chosen = cache_path
+                break
+            candidate.unlink(missing_ok=True)
+        if chosen:
+            clips.append(chosen)
+    return clips
+
+
+HOOK_WINDOW = 4  # segundos que dura el hook de apertura
+CTA_WINDOW = 8  # segundos finales reservados para el CTA
+
+
 def generate_reel(track_row, album_row) -> ContentItem:
-    """Reel vertical 1080x1920 de REEL_DURATION segundos: portada + waveform
-    del audio real. `track_row`/`album_row` son sqlite3.Row de brain.catalogue.store."""
+    """Reel vertical 1080x1920 de REEL_DURATION segundos: montaje de varios
+    clips de stock elegidos por el CEO como curador para esta canción
+    específica (brief vía Claude, ver _creative_brief), hook al abrir,
+    CTA al cerrar, waveform del audio real de fondo. `track_row`/
+    `album_row` son sqlite3.Row de brain.catalogue.store."""
     item_id = f"reel-{track_row['id'].replace('/', '-')}-{uuid.uuid4().hex[:6]}"
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RENDER_DIR / f"{item_id}.mp4"
@@ -135,55 +232,60 @@ def generate_reel(track_row, album_row) -> ContentItem:
     audio_path = track_row["audio_path"]
     artwork_path = album_row["artwork_path"]
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
-    stock_video = _get_stock_background(album_row)
+
+    brief = _creative_brief(track_row, album_row)
+    clips = _get_stock_clips(track_row, brief["clip_queries"])
 
     font = _ffmpeg_font_path()
-    track_title = _escape_drawtext(track_row["title"])
-    album_title = _escape_drawtext(album_row["title"])
+    hook = _escape_drawtext(brief.get("hook") or track_row["title"])
     cta = _escape_drawtext(CTA_TEXT)
+    hook_block = (
+        f"drawtext=fontfile='{font}':text='{hook}':fontcolor=white:fontsize=52:"
+        f"box=1:boxcolor=black@0.45:boxborderw=16:x=(w-text_w)/2:y=(h-text_h)/2:"
+        f"enable='between(t\\,0\\,{HOOK_WINDOW})'"
+    )
     cta_block = (
-        f"drawtext=fontfile='{font}':text='{cta}':fontcolor=white:fontsize=34:"
-        f"box=1:boxcolor=black@0.45:boxborderw=16:x=(w-text_w)/2:y=140"
+        f"drawtext=fontfile='{font}':text='{cta}':fontcolor=white:fontsize=40:"
+        f"box=1:boxcolor=black@0.5:boxborderw=18:x=(w-text_w)/2:y=H-280:"
+        f"enable='gte(t\\,{REEL_DURATION - CTA_WINDOW})'"
     )
 
-    if stock_video is not None:
-        # Video de stock real como fondo — más atractivo que portada+blur.
-        bg_input = ["-stream_loop", "-1", "-i", str(stock_video)]
-        art_block = (
-            f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,eq=brightness=-0.12,{cta_block},"
-            f"drawtext=fontfile='{font}':text='{track_title}':fontcolor=white:"
-            f"fontsize=46:box=1:boxcolor=black@0.45:boxborderw=14:"
-            f"x=(w-text_w)/2:y=H-420,"
-            f"drawtext=fontfile='{font}':text='{album_title}':fontcolor=white@0.85:"
-            f"fontsize=30:box=1:boxcolor=black@0.4:boxborderw=10:"
-            f"x=(w-text_w)/2:y=H-360"
-            f"[art]"
+    if clips:
+        # Montaje de varios clips distintos — no un solo loop estático.
+        segment_dur = REEL_DURATION / len(clips)
+        clip_inputs: list[str] = []
+        for clip in clips:
+            clip_inputs += ["-stream_loop", "-1", "-t", f"{segment_dur:.2f}", "-i", str(clip)]
+        scaled = "".join(
+            f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,eq=brightness=-0.1[c{i}];"
+            for i in range(len(clips))
         )
+        concat_labels = "".join(f"[c{i}]" for i in range(len(clips)))
+        art_block = (
+            f"{scaled}{concat_labels}concat=n={len(clips)}:v=1:a=0,"
+            f"{hook_block},{cta_block}[art]"
+        )
+        bg_input = clip_inputs
+        audio_input_index = len(clips)
     elif has_artwork:
         bg_input = ["-loop", "1", "-i", artwork_path]
         art_block = (
             f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,boxblur=10:10,eq=brightness=-0.18[bgblur];"
             f"[0:v]scale=980:980[fg];"
-            f"[bgblur][fg]overlay=(W-w)/2:(H-h)/2-60,{cta_block}[art]"
+            f"[bgblur][fg]overlay=(W-w)/2:(H-h)/2-60,{hook_block},{cta_block}[art]"
         )
+        audio_input_index = 1
     else:
-        # Sin portada ni stock: tarjeta de marca con el título del track/
-        # álbum en vez de un video vacío.
+        # Sin portada ni stock: tarjeta de marca con el hook.
         bg_input = ["-f", "lavfi", "-i", f"color=c={FALLBACK_BG_COLOR}:s=1080x1920"]
-        art_block = (
-            f"[0:v]{cta_block},"
-            f"drawtext=fontfile='{font}':text='{track_title}':fontcolor=white:"
-            f"fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2-40,"
-            f"drawtext=fontfile='{font}':text='{album_title}':fontcolor=white@0.7:"
-            f"fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2+60"
-            f"[art]"
-        )
+        art_block = f"[0:v]{hook_block},{cta_block}[art]"
+        audio_input_index = 1
 
     filter_complex = (
         f"{art_block};"
-        "[1:a]showwaves=s=1000x220:mode=cline:colors=white@0.85:rate=25[wave];"
+        f"[{audio_input_index}:a]showwaves=s=1000x220:mode=cline:colors=white@0.85:rate=25[wave];"
         "[art][wave]overlay=(W-w)/2:H-300[vout]"
     )
 
@@ -193,15 +295,17 @@ def generate_reel(track_row, album_row) -> ContentItem:
         "-i", audio_path,
         "-t", str(REEL_DURATION),
         "-filter_complex", filter_complex,
-        "-map", "[vout]", "-map", "1:a",
+        "-map", "[vout]", "-map", f"{audio_input_index}:a",
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    ok = result.returncode == 0 and out_path.exists()
 
     meta = _metadata(
         f"Álbum: {album_row['title']}. Canción: {track_row['title']}. "
-        f"Género/mood: {album_row['genre_tag'] or 'ambient instrumental'}."
+        f"Mood: {brief.get('mood') or album_row['genre_tag'] or 'ambient instrumental'}. "
+        f"Hook usado en el video: {brief.get('hook')}."
     )
     title = meta.get("title") or f"{track_row['title']} — {album_row['title']} | NØBØĐ¥ Records"
     description = meta.get("description") or (
@@ -211,13 +315,26 @@ def generate_reel(track_row, album_row) -> ContentItem:
     item = ContentItem(
         id=item_id, kind="reel", source_type="track", source_id=track_row["id"],
         title=title, description=description,
-        status="rendered" if result.returncode == 0 and out_path.exists() else "failed",
-        error=None if result.returncode == 0 else result.stderr[-2000:],
+        status="rendered" if ok else "failed",
+        error=None if ok else result.stderr[-2000:],
         render_path=str(out_path) if out_path.exists() else None,
     )
 
     conn = connect()
     insert(conn, item)
+    record_decision(
+        conn,
+        Decision(
+            objective_id=None,
+            evidence=f"track={track_row['id']}, clips_encontrados={len(clips)}/{len(brief['clip_queries'])}",
+            reasoning=(
+                f"[curador:{brief.get('source')}] hook='{brief.get('hook')}' "
+                f"mood='{brief.get('mood')}' queries={brief['clip_queries']}"
+            ),
+            action=f"Reel curado para '{track_row['title']}' ({item_id})",
+            expected_result="Retener atención (hook) y convertir a suscriptor (CTA de cierre)",
+        ),
+    )
     conn.commit()
     conn.close()
     return item
