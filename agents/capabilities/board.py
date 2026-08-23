@@ -66,11 +66,50 @@ def recent_learnings(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def content_performance(conn: sqlite3.Connection, limit: int = 8) -> list[dict]:
+    """Rendimiento por video individual publicado — vistas y horas de
+    vista (si ya se propagaron en Analytics), ordenado por vistas. Esto
+    es lo que le permite al CEO decir QUÉ pieza específica funciona,
+    no solo el agregado del canal."""
+    items = conn.execute(
+        """
+        SELECT id, kind, title, platform_video_id
+        FROM content_items
+        WHERE status = 'published'
+        ORDER BY published_at DESC
+        """
+    ).fetchall()
+    result = []
+    for item in items:
+        views = conn.execute(
+            "SELECT metric_value FROM metrics WHERE asset_id = ? AND metric_name = 'views' "
+            "ORDER BY metric_date DESC LIMIT 1",
+            (item["id"],),
+        ).fetchone()
+        watch_hours = conn.execute(
+            "SELECT metric_value FROM metrics WHERE asset_id = ? AND metric_name = 'watch_hours' "
+            "ORDER BY metric_date DESC LIMIT 1",
+            (item["id"],),
+        ).fetchone()
+        result.append(
+            {
+                "kind": item["kind"],
+                "title": item["title"],
+                "url": f"https://youtu.be/{item['platform_video_id']}",
+                "views": views["metric_value"] if views else None,
+                "watch_hours": watch_hours["metric_value"] if watch_hours else None,
+            }
+        )
+    result.sort(key=lambda r: r["views"] or 0, reverse=True)
+    return result[:limit]
+
+
 def board_context() -> dict:
     conn = connect()
     context = {
         "catalogue": catalogue_summary(conn),
         "objectives": objectives_status(conn),
+        "content_performance": content_performance(conn),
         "recent_decisions": recent_decisions(conn),
         "recent_learnings": recent_learnings(conn),
     }

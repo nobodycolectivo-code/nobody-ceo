@@ -122,6 +122,49 @@ def get_watch_hours(days: int = 365) -> float:
     return minutes / 60
 
 
+def get_video_stats(video_id: str) -> dict:
+    """Vistas/likes/comentarios de un video puntual, vía Data API."""
+    creds = _credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+    resp = youtube.videos().list(part="statistics", id=video_id).execute()
+    items = resp.get("items", [])
+    if not items:
+        return {}
+    stats = items[0]["statistics"]
+    return {
+        "views": int(stats.get("viewCount", 0)),
+        "likes": int(stats.get("likeCount", 0)),
+        "comments": int(stats.get("commentCount", 0)),
+    }
+
+
+def get_video_watch_hours(video_id: str, days: int = 365) -> float | None:
+    """Horas de vista de un video puntual, vía Analytics API. Los datos de
+    Analytics tienen 24-48h de rezago — un video recién publicado da 0
+    aunque ya tenga vistas reales (esas sí aparecen en get_video_stats).
+    None si Analytics falla (scope/API no habilitada)."""
+    creds = _credentials()
+    analytics = build("youtubeAnalytics", "v2", credentials=creds)
+    end = date.today()
+    start = end - timedelta(days=days)
+    try:
+        resp = (
+            analytics.reports()
+            .query(
+                ids="channel==MINE",
+                startDate=start.isoformat(),
+                endDate=end.isoformat(),
+                metrics="estimatedMinutesWatched",
+                filters=f"video=={video_id}",
+            )
+            .execute()
+        )
+    except HttpError:
+        return None
+    rows = resp.get("rows") or [[0]]
+    return rows[0][0] / 60
+
+
 def objective_001_progress() -> dict:
     """Snapshot directo contra el Objetivo 001 (desbloquear watch page
     ads): suscriptores y horas de vista calificadas vs. 1,000 / 4,000."""

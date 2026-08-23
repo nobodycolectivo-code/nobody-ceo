@@ -82,6 +82,27 @@ async def handle_nuevo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def handle_genera_ahora(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/genera_ahora — dispara el ciclo del CEO fuera del horario
+    automático. Publica de verdad (mismo comportamiento que el ciclo
+    diario) — no es una simulación."""
+    founder_chat_id = int(os.environ["TELEGRAM_FOUNDER_CHAT_ID"])
+    if update.effective_chat is None or update.effective_chat.id != founder_chat_id:
+        return
+
+    from agents.ceo.loop import run_cycle
+
+    await update.message.reply_text(
+        "Arrancando el ciclo ahora — va a generar y publicar de verdad. Aviso cuando termine."
+    )
+    try:
+        result = await asyncio.to_thread(run_cycle, True)
+        await update.message.reply_text(_cycle_summary_text(result))
+    except Exception:
+        logger.exception("Error corriendo el ciclo on-demand")
+        await update.message.reply_text("Algo falló corriendo el ciclo — revisa los logs.")
+
+
 def _cycle_summary_text(result: dict) -> str:
     if result.get("skipped"):
         return f"Ciclo del CEO: no corrió ({result.get('reason')})."
@@ -129,6 +150,7 @@ def main() -> None:
     load_dotenv()
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
     app.add_handler(CommandHandler("nuevo", handle_nuevo))
+    app.add_handler(CommandHandler("genera_ahora", handle_genera_ahora))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info(
         "NOBODY CEO escuchando en Telegram (long-polling) — ciclo cada %sh",

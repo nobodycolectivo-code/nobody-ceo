@@ -29,7 +29,7 @@ from agents.capabilities.content import (
     pick_next_long_video_source,
     pick_next_reel_source,
 )
-from agents.capabilities.metrics import sync_youtube_metrics
+from agents.capabilities.metrics import sync_video_metrics, sync_youtube_metrics
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
 from brain.learnings.store import record as record_learning
@@ -177,6 +177,7 @@ def run_cycle(force: bool = False) -> dict:
 
     # MEASURE (después)
     after = sync_youtube_metrics()
+    sync_video_metrics()
 
     # LEARN
     record_learning(
