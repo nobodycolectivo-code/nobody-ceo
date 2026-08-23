@@ -1,0 +1,21 @@
+[project]
+name = "nobody-ceo"
+version = "0.1.0"
+description = "CEO agéntico de NØBØĐ¥ RECORDS — solo lectura en v0.1"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.40.0",
+    "python-telegram-bot>=21.0",
+    "google-api-python-client>=2.149.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth>=2.35.0",
+    "spotipy>=2.24.0",
+    "python-dotenv>=1.0.1",
+    "mutagen>=1.47.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
