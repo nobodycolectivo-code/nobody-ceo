@@ -28,6 +28,19 @@ def record_metric(conn: sqlite3.Connection, metric: Metric) -> None:
     )
 
 
+def latest_by_name(conn: sqlite3.Connection, metric_name: str) -> sqlite3.Row | None:
+    """Última lectura de una métrica sin importar la plataforma — útil
+    para objetivos que no están atados a una sola fuente."""
+    return conn.execute(
+        """
+        SELECT * FROM metrics
+        WHERE metric_name = ? AND asset_id IS NULL
+        ORDER BY metric_date DESC LIMIT 1
+        """,
+        (metric_name,),
+    ).fetchone()
+
+
 def latest(conn: sqlite3.Connection, platform: str, metric_name: str) -> sqlite3.Row | None:
     return conn.execute(
         """
