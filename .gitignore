@@ -9,3 +9,4 @@ venv/
 .uv-cache/
 *.egg-info/
 .pytest_cache/
+render_output/

@@ -97,3 +97,21 @@ CREATE TABLE IF NOT EXISTS ledger (
     approved_by  TEXT,                -- obligatorio para entry_type = 'expense' (ver GOVERNANCE.md)
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── Content (reels / videos generados y publicados) ───────────────────────
+CREATE TABLE IF NOT EXISTS content_items (
+    id             TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,       -- reel | long_video
+    source_type    TEXT NOT NULL,       -- track | album
+    source_id      TEXT NOT NULL,       -- track_id o album_id
+    render_path    TEXT,
+    title          TEXT,
+    description    TEXT,
+    status         TEXT NOT NULL DEFAULT 'draft',  -- draft | rendered | published | failed
+    platform       TEXT,                -- youtube
+    platform_video_id TEXT,
+    error          TEXT,
+    objective_id   TEXT REFERENCES objectives(id),
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    published_at   TEXT
+);

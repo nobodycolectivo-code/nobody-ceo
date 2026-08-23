@@ -16,7 +16,7 @@ bug, no un atajo válido.
 | UNDERSTAND | Compara contra objetivos y aprendizajes previos | lectura de `brain/objectives`, `brain/learnings` |
 | HYPOTHESIZE | Propone una explicación o experimento, nunca prescrito de antemano | `brain/experiments` (estado `running`) |
 | DECIDE | Elige una acción concreta con razonamiento explícito | `brain/decisions` (estado `pending`) |
-| ACT | Ejecuta — en v0.1, **no hay acciones que publiquen o gasten** | `brain/decisions` (estado `executed`) |
+| ACT | Ejecuta — genera y publica reels/video largo en YouTube para el Objetivo 001 (ver nota de autonomía abajo); nunca gasta dinero | `brain/decisions` (estado `executed`), `brain/content` |
 | MEASURE | Vuelve a leer métricas después de la acción | `brain/metrics` |
 | LEARN | Registra qué funcionó y qué no | `brain/learnings` |
 
@@ -42,12 +42,24 @@ explícitamente:
 **El CEO nunca inventa una métrica ausente.** Si el dato no está en
 `NOBODY_BRAIN`, la respuesta correcta es decir que no está, no aproximarlo.
 
+## Autonomía de publicación (decisión registrada, 2026-08-23)
+
+Santiago autorizó **autonomía total de publicación** en YouTube para
+perseguir el Objetivo 001: el CEO genera reels y videos largos desde el
+catálogo real y los publica sin pedir confirmación por envío — no hay
+compuerta tipo `founder_override` en v1 de esta capacidad. La
+auditabilidad viene de que cada generación y cada publicación (o falla)
+queda en `brain/decisions` con su razonamiento, no de una aprobación
+previa. Si la calidad o el criterio del CEO no son consistentes, esta
+decisión se puede revertir agregando una compuerta — no está descartado,
+solo no es el punto de partida.
+
 ## Límites explícitos de v0.1
 
-- Sin capacidad de publicar contenido en ninguna plataforma.
 - Sin capacidad de gastar dinero.
 - Sin conexión a sistemas de producción anteriores (AURELIO / THE_FIELD /
   pipelines previos de `conversa/`).
-- Solo lectura sobre YouTube, Spotify y DistroKid — ver
+- Sin publicación en X/Instagram/TikTok — solo YouTube.
+- Solo lectura (no publicación) sobre Spotify y DistroKid — ver
   [OBJECTIVES.md](OBJECTIVES.md) para el primer objetivo y la propuesta de
   arquitectura para el detalle de credenciales y riesgos por integración.
