@@ -76,7 +76,7 @@ async def _run_cycle_periodically(app: Application) -> None:
     while True:
         try:
             logger.info("Iniciando ciclo del CEO #%d", cycle_count)
-            result = await asyncio.to_thread(run_cycle, cycle_count)
+            result = await asyncio.to_thread(run_cycle)
             logger.info("Ciclo del CEO completado: %s", result.get("actions"))
             await app.bot.send_message(chat_id=founder_chat_id, text=_cycle_summary_text(result))
         except Exception:

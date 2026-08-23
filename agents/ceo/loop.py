@@ -10,9 +10,12 @@ compuerta de aprobación.
 
 Política v1 (simple a propósito, ver docs/CEO_MANDATE.md sobre evitar
 abstracción prematura):
-  - 1 reel por ciclo, del siguiente track sin reel todavía.
-  - 1 video largo cada CICLOS_POR_VIDEO_LARGO ciclos, del siguiente
-    álbum sin video largo todavía.
+  - REELS_POR_CICLO reels por ciclo (uno por track sin usar).
+  - 1 video largo por ciclo, del siguiente álbum sin video largo todavía.
+
+Reactivación del canal (decisión de Santiago, 2026-08-23): antes era
+1 reel/día y 1 video largo cada 3 días — se sube a 3 reels + 1 video
+largo por día.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from brain.learnings.store import record as record_learning
 from integrations.youtube.publish import upload_video
 
 OBJECTIVE_ID = "001-unlock-watch-page-ads"
-CICLOS_POR_VIDEO_LARGO = 3  # 1 video largo cada 3 corridas del ciclo
+REELS_POR_CICLO = 3
 
 
 def _publish_item(conn, item, is_short: bool) -> None:
@@ -87,7 +90,7 @@ def _already_ran_today(conn) -> bool:
     return row is not None
 
 
-def run_cycle(cycle_count_hint: int | None = None, force: bool = False) -> dict:
+def run_cycle(force: bool = False) -> dict:
     conn = connect()
 
     if not force and _already_ran_today(conn):
@@ -111,9 +114,11 @@ def run_cycle(cycle_count_hint: int | None = None, force: bool = False) -> dict:
 
     actions_taken = []
 
-    # HYPOTHESIZE + DECIDE + ACT: reel
-    track = pick_next_reel_source(conn)
-    if track is not None:
+    # HYPOTHESIZE + DECIDE + ACT: reels (varios por ciclo)
+    for _ in range(REELS_POR_CICLO):
+        track = pick_next_reel_source(conn)
+        if track is None:
+            break
         album = conn.execute(
             "SELECT * FROM albums WHERE id = ?", (track["album_id"],)
         ).fetchone()
@@ -142,35 +147,33 @@ def run_cycle(cycle_count_hint: int | None = None, force: bool = False) -> dict:
              "video_id": final["platform_video_id"]}
         )
 
-    # HYPOTHESIZE + DECIDE + ACT: video largo (cada N ciclos)
-    do_long_video = (cycle_count_hint or 0) % CICLOS_POR_VIDEO_LARGO == 0
-    if do_long_video:
-        album, tracks = pick_next_long_video_source(conn)
-        if album is not None:
-            long_video = generate_long_video(album, tracks)
-            record_decision(
-                conn,
-                Decision(
-                    objective_id=OBJECTIVE_ID,
-                    evidence=f"watch_hours_gap={hours_gap}",
-                    reasoning=(
-                        "El video largo es la forma más eficiente de acumular "
-                        "watch_hours_365d por unidad de contenido publicado."
-                    ),
-                    action=f"Generado video largo del álbum '{album['title']}'",
-                    expected_result="Aportar a watch_hours_gap",
+    # HYPOTHESIZE + DECIDE + ACT: video largo (uno por ciclo)
+    album, tracks = pick_next_long_video_source(conn)
+    if album is not None:
+        long_video = generate_long_video(album, tracks)
+        record_decision(
+            conn,
+            Decision(
+                objective_id=OBJECTIVE_ID,
+                evidence=f"watch_hours_gap={hours_gap}",
+                reasoning=(
+                    "El video largo es la forma más eficiente de acumular "
+                    "watch_hours_365d por unidad de contenido publicado."
                 ),
-            )
-            conn.commit()
-            _publish_item(conn, long_video, is_short=False)
-            final = conn.execute(
-                "SELECT status, platform_video_id FROM content_items WHERE id = ?",
-                (long_video.id,),
-            ).fetchone()
-            actions_taken.append(
-                {"kind": "long_video", "id": long_video.id, "status": final["status"],
-                 "video_id": final["platform_video_id"]}
-            )
+                action=f"Generado video largo del álbum '{album['title']}'",
+                expected_result="Aportar a watch_hours_gap",
+            ),
+        )
+        conn.commit()
+        _publish_item(conn, long_video, is_short=False)
+        final = conn.execute(
+            "SELECT status, platform_video_id FROM content_items WHERE id = ?",
+            (long_video.id,),
+        ).fetchone()
+        actions_taken.append(
+            {"kind": "long_video", "id": long_video.id, "status": final["status"],
+             "video_id": final["platform_video_id"]}
+        )
 
     # MEASURE (después)
     after = sync_youtube_metrics()
@@ -195,5 +198,5 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
 
     load_dotenv()
-    result = run_cycle(cycle_count_hint=0)
+    result = run_cycle()
     print(json.dumps(result, indent=2, ensure_ascii=False))
