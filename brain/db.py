@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = REPO_ROOT / "brain" / "schema.sql"
-DEFAULT_DB_PATH = REPO_ROOT / "data" / "nobody.db"
+
+# NOBODY_DB_PATH permite apuntar a un volumen persistente (p. ej. en
+# Railway) sin depender de dónde el runtime coloque el código. En local,
+# por defecto, es data/nobody.db dentro del repo.
+DEFAULT_DB_PATH = Path(os.environ.get("NOBODY_DB_PATH", REPO_ROOT / "data" / "nobody.db"))
 
 
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
