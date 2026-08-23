@@ -11,11 +11,17 @@ dependencies = [
     "google-auth>=2.35.0",
     "spotipy>=2.24.0",
     "python-dotenv>=1.0.1",
-    "mutagen>=1.47.0",
 ]
+
+# La ingesta de catálogo (agents/capabilities/catalogue.py) usa ffprobe vía
+# subprocess para leer duración/formato sin decodificar el archivo completo.
+# Requiere ffmpeg/ffprobe instalado y en PATH — no es una dependencia de Python.
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
+
+[tool.setuptools.packages.find]
+include = ["brain*", "agents*", "integrations*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
