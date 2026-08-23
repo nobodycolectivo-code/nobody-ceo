@@ -22,15 +22,28 @@ import anthropic
 
 from brain.content.store import ContentItem, already_used_source_ids, insert, mark_rendered
 from brain.db import connect
+from integrations.pexels.client import best_vertical_file, download_video, search_vertical_video
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_FONT_PATH = REPO_ROOT / "assets" / "fonts" / "Inter-Regular.ttf"
 
 RENDER_DIR = Path(os.environ.get("NOBODY_RENDER_DIR", "render_output"))
+STOCK_CACHE_DIR = RENDER_DIR / "stock_cache"
 REEL_DURATION = 45  # segundos, formato short/reel
 CLAUDE_MODEL = "claude-sonnet-5"
 
 FALLBACK_BG_COLOR = "0x1b1d1c"  # coherente con el neutro del resto del proyecto
+CTA_TEXT = "SUSCRÍBETE — NØBØĐ¥ RECORDS"
+
+GENRE_TO_STOCK_QUERY = {
+    "ANDINO": "andes mountains nature",
+    "PSICODELICO": "psychedelic abstract colors",
+    "FRECUENCIAS": "meditation sound healing",
+    "CUMBIA": "tropical colorful dance",
+    "FLAMENCO": "flamenco fire dance",
+    "RITUAL": "ritual candles ceremony",
+}
+DEFAULT_STOCK_QUERY = "ambient nature calm"
 
 
 def _slug(text: str) -> str:
@@ -89,6 +102,29 @@ def _ffprobe_duration(path: Path) -> float | None:
         return None
 
 
+def _get_stock_background(album_row) -> Path | None:
+    """Video de stock vertical de Pexels para el álbum, cacheado en disco
+    (uno por álbum — se reutiliza entre tracks del mismo álbum, así no se
+    gasta una llamada de API por cada reel). None si Pexels falla o no
+    hay resultados; el llamador debe manejar ese caso con el fallback de
+    portada/tarjeta de marca."""
+    cache_path = STOCK_CACHE_DIR / f"{album_row['id']}.mp4"
+    if cache_path.exists():
+        return cache_path
+
+    query = GENRE_TO_STOCK_QUERY.get(album_row["genre_tag"], DEFAULT_STOCK_QUERY)
+    try:
+        videos = search_vertical_video(query)
+        if not videos:
+            return None
+        file = best_vertical_file(videos[0])
+        if not file or not file.get("link"):
+            return None
+        return download_video(file["link"], cache_path)
+    except Exception:
+        return None
+
+
 def generate_reel(track_row, album_row) -> ContentItem:
     """Reel vertical 1080x1920 de REEL_DURATION segundos: portada + waveform
     del audio real. `track_row`/`album_row` son sqlite3.Row de brain.catalogue.store."""
@@ -99,32 +135,49 @@ def generate_reel(track_row, album_row) -> ContentItem:
     audio_path = track_row["audio_path"]
     artwork_path = album_row["artwork_path"]
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
+    stock_video = _get_stock_background(album_row)
 
     font = _ffmpeg_font_path()
     track_title = _escape_drawtext(track_row["title"])
     album_title = _escape_drawtext(album_row["title"])
+    cta = _escape_drawtext(CTA_TEXT)
+    cta_block = (
+        f"drawtext=fontfile='{font}':text='{cta}':fontcolor=white:fontsize=34:"
+        f"box=1:boxcolor=black@0.45:boxborderw=16:x=(w-text_w)/2:y=140"
+    )
 
-    if has_artwork:
+    if stock_video is not None:
+        # Video de stock real como fondo — más atractivo que portada+blur.
+        bg_input = ["-stream_loop", "-1", "-i", str(stock_video)]
+        art_block = (
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,eq=brightness=-0.12,{cta_block},"
+            f"drawtext=fontfile='{font}':text='{track_title}':fontcolor=white:"
+            f"fontsize=46:box=1:boxcolor=black@0.45:boxborderw=14:"
+            f"x=(w-text_w)/2:y=H-420,"
+            f"drawtext=fontfile='{font}':text='{album_title}':fontcolor=white@0.85:"
+            f"fontsize=30:box=1:boxcolor=black@0.4:boxborderw=10:"
+            f"x=(w-text_w)/2:y=H-360"
+            f"[art]"
+        )
+    elif has_artwork:
         bg_input = ["-loop", "1", "-i", artwork_path]
         art_block = (
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,boxblur=10:10,eq=brightness=-0.18[bg];"
-            "[0:v]scale=980:980[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2-60[art]"
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,boxblur=10:10,eq=brightness=-0.18[bgblur];"
+            f"[0:v]scale=980:980[fg];"
+            f"[bgblur][fg]overlay=(W-w)/2:(H-h)/2-60,{cta_block}[art]"
         )
     else:
-        # Sin portada: tarjeta de marca con el título del track/álbum en
-        # vez de un video vacío — necesario para que el reel identifique
-        # qué es aunque no haya arte disponible para ese álbum.
+        # Sin portada ni stock: tarjeta de marca con el título del track/
+        # álbum en vez de un video vacío.
         bg_input = ["-f", "lavfi", "-i", f"color=c={FALLBACK_BG_COLOR}:s=1080x1920"]
         art_block = (
-            f"[0:v]"
+            f"[0:v]{cta_block},"
             f"drawtext=fontfile='{font}':text='{track_title}':fontcolor=white:"
             f"fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2-40,"
             f"drawtext=fontfile='{font}':text='{album_title}':fontcolor=white@0.7:"
-            f"fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2+60,"
-            f"drawtext=fontfile='{font}':text='NØBØĐ¥ Records':fontcolor=white@0.6:"
-            f"fontsize=32:x=(w-text_w)/2:y=140"
+            f"fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2+60"
             f"[art]"
         )
 
