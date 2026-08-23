@@ -1,0 +1,9 @@
+Inter (Inter-Regular.ttf, Inter-Bold.ttf)
+Copyright 2020 The Inter Project Authors
+Licensed under the SIL Open Font License, Version 1.1
+https://openfontlicense.org
+
+Descargado desde Google Fonts (fonts.gstatic.com). Empaquetado aquí para
+que la generación de contenido (agents/capabilities/content.py) no
+dependa de una fuente instalada en el sistema operativo — funciona igual
+en Windows local y en el contenedor Linux de Railway.

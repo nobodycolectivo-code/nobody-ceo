@@ -23,6 +23,9 @@ import anthropic
 from brain.content.store import ContentItem, already_used_source_ids, insert, mark_rendered
 from brain.db import connect
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_FONT_PATH = REPO_ROOT / "assets" / "fonts" / "Inter-Regular.ttf"
+
 RENDER_DIR = Path(os.environ.get("NOBODY_RENDER_DIR", "render_output"))
 REEL_DURATION = 45  # segundos, formato short/reel
 CLAUDE_MODEL = "claude-sonnet-5"
@@ -36,9 +39,11 @@ def _slug(text: str) -> str:
 
 def _ffmpeg_font_path() -> str:
     """Ruta del font para drawtext, escapada para la sintaxis de filtro de
-    ffmpeg (el ':' de 'C:' choca con la sintaxis si no se escapa)."""
-    path = os.environ.get("NOBODY_FONT_PATH", r"C:/Windows/Fonts/arial.ttf")
-    return path.replace(":", r"\:")
+    ffmpeg. Usa la fuente empaquetada en assets/fonts (Inter, OFL) para que
+    funcione igual en Windows local y en el contenedor de Railway — nunca
+    depende de una fuente del sistema operativo."""
+    path = os.environ.get("NOBODY_FONT_PATH", str(DEFAULT_FONT_PATH))
+    return path.replace("\\", "/").replace(":", r"\:")
 
 
 def _escape_drawtext(text: str) -> str:

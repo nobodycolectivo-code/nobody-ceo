@@ -1,4 +1,7 @@
-"""Bot de Telegram — modo pregunta del CEO, long-polling.
+"""Bot de Telegram — modo pregunta del CEO, long-polling. También corre
+el ciclo autónomo (agents.ceo.loop) en segundo plano dentro del mismo
+proceso, para compartir el volumen de NOBODY_BRAIN sin necesitar un
+segundo servicio en Railway.
 
 Restringido al chat_id del Founder (TELEGRAM_FOUNDER_CHAT_ID) — cualquier
 otro chat se ignora y nunca llega al CEO ni a NOBODY_BRAIN.
@@ -9,6 +12,7 @@ Uso:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -21,6 +25,8 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
 )
 logger = logging.getLogger("nobody_ceo.telegram")
+
+CYCLE_INTERVAL_HOURS = float(os.environ.get("NOBODY_CYCLE_INTERVAL_HOURS", "24"))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -42,13 +48,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(reply)
 
 
+def _cycle_summary_text(result: dict) -> str:
+    if result.get("skipped"):
+        return f"Ciclo del CEO: no corrió ({result.get('reason')})."
+    actions = result.get("actions", [])
+    if not actions:
+        return "Ciclo del CEO corrido — no había contenido nuevo para generar."
+    lines = ["Ciclo del CEO completado:"]
+    for a in actions:
+        status = a["status"]
+        vid = a.get("video_id")
+        link = f" https://youtu.be/{vid}" if vid else ""
+        lines.append(f"- {a['kind']}: {status}{link}")
+    after = result.get("after", {})
+    lines.append(
+        f"\nSubs: {after.get('subscribers')} | "
+        f"Watch hours 365d: {after.get('watch_hours_365d')}"
+    )
+    return "\n".join(lines)
+
+
+async def _run_cycle_periodically(app: Application) -> None:
+    from agents.ceo.loop import run_cycle
+
+    founder_chat_id = int(os.environ["TELEGRAM_FOUNDER_CHAT_ID"])
+    cycle_count = 0
+    while True:
+        try:
+            logger.info("Iniciando ciclo del CEO #%d", cycle_count)
+            result = await asyncio.to_thread(run_cycle, cycle_count)
+            logger.info("Ciclo del CEO completado: %s", result.get("actions"))
+            await app.bot.send_message(chat_id=founder_chat_id, text=_cycle_summary_text(result))
+        except Exception:
+            logger.exception("Error en el ciclo del CEO")
+        cycle_count += 1
+        await asyncio.sleep(CYCLE_INTERVAL_HOURS * 3600)
+
+
+async def post_init(app: Application) -> None:
+    asyncio.create_task(_run_cycle_periodically(app))
+
+
 def main() -> None:
     from dotenv import load_dotenv
 
     load_dotenv()
-    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
+    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("NOBODY CEO escuchando en Telegram (long-polling)...")
+    logger.info(
+        "NOBODY CEO escuchando en Telegram (long-polling) — ciclo cada %sh",
+        CYCLE_INTERVAL_HOURS,
+    )
     app.run_polling()
 
 

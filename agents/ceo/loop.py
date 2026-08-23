@@ -78,8 +78,21 @@ def _publish_item(conn, item, is_short: bool) -> None:
         conn.commit()
 
 
-def run_cycle(cycle_count_hint: int | None = None) -> dict:
+def _already_ran_today(conn) -> bool:
+    """Evita publicar dos veces el mismo día si el proceso se reinicia
+    (crash, redeploy) — el ciclo es de una vez al día, no por arranque."""
+    row = conn.execute(
+        "SELECT 1 FROM content_items WHERE date(created_at) = date('now') LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def run_cycle(cycle_count_hint: int | None = None, force: bool = False) -> dict:
     conn = connect()
+
+    if not force and _already_ran_today(conn):
+        conn.close()
+        return {"skipped": True, "reason": "ya se generó contenido hoy"}
 
     # OBSERVE + MEASURE (antes)
     before = sync_youtube_metrics()
