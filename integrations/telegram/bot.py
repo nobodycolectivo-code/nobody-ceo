@@ -17,7 +17,7 @@ import logging
 import os
 
 from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from agents.ceo.ask import answer
 
@@ -46,6 +46,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.exception("Error respondiendo la pregunta")
         reply = "Algo falló leyendo NOBODY_BRAIN — revisa los logs de la terminal."
     await update.message.reply_text(reply)
+
+
+async def handle_nuevo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/nuevo <descripción> — Santiago avisa que agregó material a la
+    carpeta del catálogo. El bot NO puede leer esa carpeta (vive en la
+    máquina local, no en Railway) — solo deja constancia en
+    brain/decisions. La sincronización real corre localmente, ver
+    scripts/sync_catalogue.py."""
+    founder_chat_id = int(os.environ["TELEGRAM_FOUNDER_CHAT_ID"])
+    if update.effective_chat is None or update.effective_chat.id != founder_chat_id:
+        return
+
+    from brain.db import connect
+    from brain.decisions.store import Decision, record as record_decision
+
+    detalle = " ".join(context.args) if context.args else "(sin descripción)"
+    conn = connect()
+    record_decision(
+        conn,
+        Decision(
+            objective_id=None,
+            evidence=f"aviso de Santiago vía Telegram: {detalle}",
+            reasoning="El catálogo local no es visible desde Railway — queda pendiente de sync manual.",
+            action="Pendiente: sincronizar catálogo (correr scripts/sync_catalogue.py localmente)",
+            expected_result="Contenido nuevo disponible para generar reels/videos",
+            status="pending",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(
+        "Anotado. No puedo leer la carpeta del catálogo desde aquí (vivo en la nube) — "
+        "hay que correr scripts/sync_catalogue.py en tu máquina para que quede disponible."
+    )
 
 
 def _cycle_summary_text(result: dict) -> str:
@@ -94,6 +128,7 @@ def main() -> None:
 
     load_dotenv()
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
+    app.add_handler(CommandHandler("nuevo", handle_nuevo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info(
         "NOBODY CEO escuchando en Telegram (long-polling) — ciclo cada %sh",

@@ -1,6 +1,6 @@
 # CATALOGUE_REPORT
 
-Generado: 2026-08-23T12:00:35.454161+00:00
+Generado: 2026-08-23T14:57:46.764094+00:00
 Raíz escaneada (solo lectura): `D:\Users\Santiago\Desktop\NOBODY`
 Modo: escrito en NOBODY_BRAIN
 
