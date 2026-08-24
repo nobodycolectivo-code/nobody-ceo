@@ -54,6 +54,31 @@ previa. Si la calidad o el criterio del CEO no son consistentes, esta
 decisión se puede revertir agregando una compuerta — no está descartado,
 solo no es el punto de partida.
 
+## Royalty Intelligence (2026-08-24)
+
+El CEO lee `brain/royalties` (exports de DistroKid, importados manualmente
+y de forma idempotente vía `agents.capabilities.royalties_ingest` — nunca
+scraping ni endpoint privado) y el Hero Engine
+(`agents/capabilities/hero_engine.py`), que clasifica cada track en HERO,
+RISING, EVERGREEN, DORMANT, DECLINING o EXPERIMENT con `hero_score` +
+`confidence` + `reason_codes` explícitos. **EXPERIMENT es el estado por
+defecto ante evidencia insuficiente** (menos de 4 meses de historia, o
+revenue mensual por debajo del piso de ruido) — nunca se fuerza una
+categoría fuerte con poca base, y una confidence baja se comunica como
+tal, no se oculta.
+
+Esto no reemplaza la disciplina FACT/INFERENCE/RECOMMENDATION de arriba:
+toda cifra de `royalties.intelligence` es FACT; una clasificación del
+Hero Engine (score, confidence, reason_codes) es siempre INFERENCE, nunca
+un hecho crudo.
+
+Además del modo pregunta, el CEO genera un **Board Report semanal**
+(`agents/ceo/board_report.py`, comando `/reporte_semanal` o automático
+cada `NOBODY_WEEKLY_REPORT_INTERVAL_HOURS`) con royalties, HEROES, rising
+assets, oportunidades de plataforma/país, cambios recientes y
+recomendaciones — mismo NOBODY_BRAIN, misma disciplina, formato más
+largo que una respuesta de Telegram.
+
 ## Límites explícitos de v0.1
 
 - Sin capacidad de gastar dinero.

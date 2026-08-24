@@ -98,6 +98,107 @@ CREATE TABLE IF NOT EXISTS ledger (
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ── Royalties (import de exports de DistroKid) ────────────────────────────
+-- Capa inmutable: una fila por línea de CSV vista, en cualquier export
+-- importado. La idempotencia viene de row_hash = sha256 del contenido
+-- íntegro de la fila fuente (las 15 columnas originales del export),
+-- NUNCA de las columnas dimensionales — DistroKid re-reporta meses ya
+-- reportados con cifras corregidas (restatements) en exports posteriores,
+-- así que una clave dimensional (mes+store+isrc+país) no es estable en
+-- el tiempo y puede aparecer legítimamente más de una vez el mismo día
+-- (líneas adicionales aditivas, no duplicados). Ver docs de la auditoría.
+CREATE TABLE IF NOT EXISTS royalty_facts_raw (
+    row_hash        TEXT PRIMARY KEY,
+    source_file     TEXT NOT NULL,
+    source_row_num  INTEGER NOT NULL,
+    imported_at     TEXT NOT NULL DEFAULT (datetime('now')),
+
+    date_inserted   TEXT NOT NULL,
+    reporting_date  TEXT NOT NULL,
+    sale_month      TEXT NOT NULL,
+    store           TEXT NOT NULL,
+    artist          TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    isrc            TEXT,
+    upc             TEXT NOT NULL,
+    quantity        INTEGER NOT NULL,
+    team_percentage REAL NOT NULL,
+    source_type     TEXT NOT NULL,
+    country_of_sale TEXT NOT NULL,
+    songwriter_withheld_usd REAL NOT NULL,
+    earnings_usd    REAL NOT NULL,
+    recoup_usd      REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_royalty_raw_dims
+    ON royalty_facts_raw (sale_month, store, isrc, upc, country_of_sale, reporting_date);
+
+-- Vista resuelta: para cada combinación (mes de venta, store, isrc, upc,
+-- país) toma únicamente las filas del reporting_date MÁS RECIENTE visto
+-- para esa combinación (así una restatement posterior reemplaza, no se
+-- suma, a la cifra anterior) y suma entre sí las filas que comparten ese
+-- mismo reporting_date (líneas aditivas legítimas del mismo export).
+-- Todo el motor de inteligencia consulta esta vista, nunca la tabla raw.
+CREATE VIEW IF NOT EXISTS royalty_facts_resolved AS
+WITH latest_reporting AS (
+    SELECT sale_month, store, isrc, upc, country_of_sale,
+           MAX(reporting_date) AS reporting_date
+    FROM royalty_facts_raw
+    GROUP BY sale_month, store, isrc, upc, country_of_sale
+)
+SELECT
+    r.sale_month,
+    r.store,
+    r.isrc,
+    r.upc,
+    r.country_of_sale,
+    r.reporting_date,
+    r.title,
+    r.source_type,
+    SUM(r.quantity) AS quantity,
+    SUM(r.earnings_usd) AS earnings_usd,
+    SUM(r.songwriter_withheld_usd) AS songwriter_withheld_usd
+FROM royalty_facts_raw r
+JOIN latest_reporting lr
+    ON r.sale_month = lr.sale_month
+   AND r.store = lr.store
+   AND r.isrc IS lr.isrc
+   AND r.upc = lr.upc
+   AND r.country_of_sale = lr.country_of_sale
+   AND r.reporting_date = lr.reporting_date
+GROUP BY r.sale_month, r.store, r.isrc, r.upc, r.country_of_sale,
+         r.reporting_date, r.title, r.source_type;
+
+-- Vínculo (opcional, explícito) entre un ISRC del export y un track local
+-- del catálogo. track_id queda NULL cuando no hay match suficientemente
+-- confiable — nunca se fuerza ni se inventa el vínculo.
+CREATE TABLE IF NOT EXISTS royalty_track_links (
+    isrc             TEXT PRIMARY KEY,
+    upc              TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    track_id         TEXT REFERENCES tracks(id),
+    album_id         TEXT REFERENCES albums(id),
+    match_method     TEXT NOT NULL,   -- exact_title | fuzzy_title | unmatched
+    match_confidence REAL NOT NULL,   -- 0.0–1.0
+    linked_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Snapshot versionado del Hero Engine — se apila en cada corrida, nunca
+-- se sobreescribe, para poder ver cómo cambió la clasificación de un
+-- track en el tiempo.
+CREATE TABLE IF NOT EXISTS hero_classifications (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    isrc                TEXT NOT NULL,
+    track_id            TEXT REFERENCES tracks(id),
+    title               TEXT NOT NULL,
+    classification      TEXT NOT NULL,  -- HERO | RISING | EVERGREEN | DORMANT | DECLINING | EXPERIMENT
+    hero_score          REAL NOT NULL,
+    confidence          REAL NOT NULL,
+    reason_codes        TEXT NOT NULL,  -- JSON array de strings
+    supporting_metrics  TEXT NOT NULL   -- JSON object
+);
+
 -- ── Content (reels / videos generados y publicados) ───────────────────────
 CREATE TABLE IF NOT EXISTS content_items (
     id             TEXT PRIMARY KEY,

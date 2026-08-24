@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 
 from brain.catalogue.store import counts as catalogue_counts
 from brain.catalogue.store import list_albums
 from brain.db import connect
 from brain.metrics.store import latest_by_name
+from brain.royalties.store import latest_hero_classifications, unmatched_links
 
 
 def catalogue_summary(conn: sqlite3.Connection) -> dict:
@@ -104,6 +106,47 @@ def content_performance(conn: sqlite3.Connection, limit: int = 8) -> list[dict]:
     return result[:limit]
 
 
+def royalties_context(conn: sqlite3.Connection) -> dict:
+    """Contexto de royalties para el CEO — revenue real (DistroKid),
+    clasificaciones del Hero Engine y qué parte del catálogo no se pudo
+    vincular todavía a un track local. Todo lee de NOBODY_BRAIN, ninguna
+    cifra se calcula aquí ni se inventa."""
+    from agents.capabilities.royalty_intelligence import catalogue_intelligence_summary
+
+    intelligence = catalogue_intelligence_summary(conn)
+
+    classifications = latest_hero_classifications(conn)
+    by_class: dict[str, list[dict]] = defaultdict(list)
+    for c in classifications:
+        by_class[c["classification"]].append(
+            {
+                "title": c["title"],
+                "isrc": c["isrc"],
+                "hero_score": c["hero_score"],
+                "confidence": c["confidence"],
+                "reason_codes": json.loads(c["reason_codes"]),
+            }
+        )
+    for bucket in by_class.values():
+        bucket.sort(key=lambda x: x["hero_score"], reverse=True)
+
+    unmatched = unmatched_links(conn)
+
+    return {
+        "intelligence": intelligence,
+        "hero_classifications_as_of": classifications[0]["computed_at"] if classifications else None,
+        "heroes": by_class.get("HERO", [])[:10],
+        "rising": by_class.get("RISING", [])[:10],
+        "declining": by_class.get("DECLINING", [])[:10],
+        "dormant": by_class.get("DORMANT", [])[:10],
+        "dormant_count": len(by_class.get("DORMANT", [])),
+        "evergreen_count": len(by_class.get("EVERGREEN", [])),
+        "experiment_count": len(by_class.get("EXPERIMENT", [])),
+        "unmatched_catalogue_count": len(unmatched),
+        "unmatched_catalogue_titles_sample": [u["title"] for u in unmatched[:15]],
+    }
+
+
 def board_context() -> dict:
     conn = connect()
     context = {
@@ -112,6 +155,7 @@ def board_context() -> dict:
         "content_performance": content_performance(conn),
         "recent_decisions": recent_decisions(conn),
         "recent_learnings": recent_learnings(conn),
+        "royalties": royalties_context(conn),
     }
     conn.close()
     return context
