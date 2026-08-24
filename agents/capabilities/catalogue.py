@@ -126,12 +126,18 @@ def ingest(catalogue_root: Path, dry_run: bool = False) -> dict:
         album_id = slugify(scan.name)
         artwork = pick_artwork(scan)
 
+        # audio_path/artwork_path se guardan RELATIVOS a catalogue_root (no
+        # absolutos) — un "D:\...\NOBODY\..." solo existe en la máquina que
+        # hizo la ingesta. agents.capabilities.catalogue_cache resuelve esta
+        # ruta relativa según el entorno (local o Railway vía R2) al momento
+        # de renderizar. source_path SÍ queda absoluto — es solo trazabilidad
+        # de dónde se ingirió, nunca se usa para abrir el archivo.
         album = Album(
             id=album_id,
             title=scan.name,
             source_path=str(entry),
             genre_tag=guess_genre(scan.name),
-            artwork_path=str(artwork) if artwork else None,
+            artwork_path=artwork.relative_to(catalogue_root).as_posix() if artwork else None,
         )
 
         tracks: list[Track] = []
@@ -146,7 +152,7 @@ def ingest(catalogue_root: Path, dry_run: bool = False) -> dict:
                     id=track_id,
                     album_id=album_id,
                     title=audio_path.stem,
-                    audio_path=str(audio_path),
+                    audio_path=audio_path.relative_to(catalogue_root).as_posix(),
                     duration_seconds=probe_duration(audio_path),
                     format=audio_path.suffix.lstrip(".").lower(),
                 )

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import anthropic
 
+from agents.capabilities.catalogue_cache import resolve_catalogue_file
 from brain.content.store import ContentItem, already_used_source_ids, insert, mark_rendered
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
@@ -229,8 +230,8 @@ def generate_reel(track_row, album_row) -> ContentItem:
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RENDER_DIR / f"{item_id}.mp4"
 
-    audio_path = track_row["audio_path"]
-    artwork_path = album_row["artwork_path"]
+    audio_path = resolve_catalogue_file(track_row["audio_path"])
+    artwork_path = resolve_catalogue_file(album_row["artwork_path"])
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
 
     brief = _creative_brief(track_row, album_row)
@@ -350,7 +351,7 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RENDER_DIR / f"{item_id}.mp4"
 
-    artwork_path = album_row["artwork_path"]
+    artwork_path = resolve_catalogue_file(album_row["artwork_path"])
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
     font = _ffmpeg_font_path()
     album_title = _escape_drawtext(album_row["title"])
@@ -369,7 +370,7 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
 
     audio_inputs = []
     for t in tracks:
-        audio_inputs += ["-i", t["audio_path"]]
+        audio_inputs += ["-i", resolve_catalogue_file(t["audio_path"])]
     concat_labels = "".join(f"[{i + 1}:a]" for i in range(len(tracks)))
     filter_complex = f"[0:v]{vf}[bgv];{concat_labels}concat=n={len(tracks)}:v=0:a=1[outa]"
 

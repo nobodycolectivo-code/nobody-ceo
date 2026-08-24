@@ -1,6 +1,6 @@
 # CATALOGUE_REPORT
 
-Generado: 2026-08-23T14:57:46.764094+00:00
+Generado: 2026-08-24T14:58:00.914252+00:00
 Raíz escaneada (solo lectura): `D:\Users\Santiago\Desktop\NOBODY`
 Modo: escrito en NOBODY_BRAIN
 
@@ -59,6 +59,7 @@ Modo: escrito en NOBODY_BRAIN
 - Imagen de WhatsApp 2025-07-01 a las 15.18.05_88e0fb91.jpg
 - NOBODY_Volumen_II_Ilustrado.pdf
 - Prueba de 528 Hz – El Corazón del Código ‐ Hecho con Clipchamp.mp4
+- results.csv
 - trance psicodelico volumen 1.mp4
 
 ## Notas de método
