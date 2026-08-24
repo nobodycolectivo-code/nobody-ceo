@@ -29,6 +29,7 @@ from agents.capabilities.content import (
     pick_next_long_video_source,
     pick_next_reel_source,
 )
+from agents.capabilities.engage import run_engagement_cycle
 from agents.capabilities.metrics import sync_video_metrics, sync_youtube_metrics
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
@@ -174,6 +175,10 @@ def run_cycle(force: bool = False) -> dict:
             {"kind": "long_video", "id": long_video.id, "status": final["status"],
              "video_id": final["platform_video_id"]}
         )
+
+    # HYPOTHESIZE + DECIDE + ACT: engagement (comentarios en otros canales)
+    for c in run_engagement_cycle():
+        actions_taken.append({"kind": "comment", **c})
 
     # MEASURE (después)
     after = sync_youtube_metrics()

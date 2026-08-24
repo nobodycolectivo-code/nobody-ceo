@@ -112,9 +112,12 @@ def _cycle_summary_text(result: dict) -> str:
     lines = ["Ciclo del CEO completado:"]
     for a in actions:
         status = a["status"]
-        vid = a.get("video_id")
-        link = f" https://youtu.be/{vid}" if vid else ""
-        lines.append(f"- {a['kind']}: {status}{link}")
+        if a["kind"] == "comment":
+            lines.append(f"- comentario en '{a.get('channel')}': {status}")
+        else:
+            vid = a.get("video_id")
+            link = f" https://youtu.be/{vid}" if vid else ""
+            lines.append(f"- {a['kind']}: {status}{link}")
     after = result.get("after", {})
     lines.append(
         f"\nSubs: {after.get('subscribers')} | "
