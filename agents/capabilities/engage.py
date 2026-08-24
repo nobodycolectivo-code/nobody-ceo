@@ -26,7 +26,7 @@ from brain.decisions.store import Decision, record as record_decision
 from integrations.youtube.comment import post_comment, search_videos
 
 CLAUDE_MODEL = "claude-sonnet-5"
-COMMENTS_PER_CICLO = 3
+COMMENTS_PER_CICLO = 10
 
 ENGAGE_QUERIES = [
     "ambient music mix",
