@@ -98,6 +98,8 @@ async def handle_genera_ahora(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         result = await asyncio.to_thread(run_cycle, True)
         await update.message.reply_text(_cycle_summary_text(result))
+        if result.get("playlist_message"):
+            await update.message.reply_text(result["playlist_message"])
     except Exception:
         logger.exception("Error corriendo el ciclo on-demand")
         await update.message.reply_text("Algo falló corriendo el ciclo — revisa los logs.")
@@ -114,6 +116,10 @@ def _cycle_summary_text(result: dict) -> str:
         status = a["status"]
         if a["kind"] == "comment":
             lines.append(f"- comentario en '{a.get('channel')}': {status}")
+        elif a["kind"] == "playlist":
+            pid = a.get("video_id")
+            link = f" https://open.spotify.com/playlist/{pid}" if pid else ""
+            lines.append(f"- playlist: {status}{link} (tracklist en el próximo mensaje)")
         else:
             vid = a.get("video_id")
             link = f" https://youtu.be/{vid}" if vid else ""
@@ -137,6 +143,8 @@ async def _run_cycle_periodically(app: Application) -> None:
             result = await asyncio.to_thread(run_cycle)
             logger.info("Ciclo del CEO completado: %s", result.get("actions"))
             await app.bot.send_message(chat_id=founder_chat_id, text=_cycle_summary_text(result))
+            if result.get("playlist_message"):
+                await app.bot.send_message(chat_id=founder_chat_id, text=result["playlist_message"])
         except Exception:
             logger.exception("Error en el ciclo del CEO")
         cycle_count += 1

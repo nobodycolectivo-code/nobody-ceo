@@ -31,6 +31,7 @@ from agents.capabilities.content import (
 )
 from agents.capabilities.engage import run_engagement_cycle
 from agents.capabilities.metrics import sync_video_metrics, sync_youtube_metrics
+from agents.capabilities.playlist import generate_playlist
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
 from brain.learnings.store import record as record_learning
@@ -180,6 +181,16 @@ def run_cycle(force: bool = False) -> dict:
     for c in run_engagement_cycle():
         actions_taken.append({"kind": "comment", **c})
 
+    # HYPOTHESIZE + DECIDE + ACT: playlist de Spotify (1 por ciclo, por género)
+    playlist_message = None
+    playlist_result = generate_playlist()
+    if playlist_result is not None:
+        playlist_item, playlist_message = playlist_result
+        actions_taken.append(
+            {"kind": "playlist", "id": playlist_item.id, "status": playlist_item.status,
+             "video_id": playlist_item.platform_video_id}
+        )
+
     # MEASURE (después)
     after = sync_youtube_metrics()
     sync_video_metrics()
@@ -197,7 +208,10 @@ def run_cycle(force: bool = False) -> dict:
     conn.commit()
     conn.close()
 
-    return {"before": before, "after": after, "actions": actions_taken}
+    return {
+        "before": before, "after": after, "actions": actions_taken,
+        "playlist_message": playlist_message,
+    }
 
 
 if __name__ == "__main__":
