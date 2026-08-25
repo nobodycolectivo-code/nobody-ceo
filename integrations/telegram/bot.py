@@ -191,9 +191,10 @@ def _cycle_summary_text(result: dict) -> str:
         if a["kind"] == "comment":
             lines.append(f"- comentario en '{a.get('channel')}': {status}")
         elif a["kind"] == "playlist":
-            pid = a.get("video_id")
-            link = f" https://open.spotify.com/playlist/{pid}" if pid else ""
-            lines.append(f"- playlist: {status}{link} (tracklist en el próximo mensaje)")
+            # No crea nada en Spotify (add_tracks sigue bloqueado, ver
+            # agents.capabilities.playlist) — status siempre es "draft",
+            # la tracklist curada va en el próximo mensaje para crear a mano.
+            lines.append("- playlist: curada, pendiente de crear a mano (tracklist en el próximo mensaje)")
         else:
             vid = a.get("video_id")
             link = f" https://youtu.be/{vid}" if vid else ""

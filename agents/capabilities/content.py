@@ -58,6 +58,17 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-") or "sin-nombre"
 
 
+def _summarize_ffmpeg_error(stderr: str, limit: int = 2000) -> str:
+    """Guarda el principio (donde ffmpeg reporta los streams de entrada y
+    el primer error real) y el final (estado final) del stderr, en vez de
+    solo la cola — un error real casi siempre aparece cerca del inicio y
+    se pierde bajo líneas de progreso repetidas si solo se guarda [-N:]."""
+    if len(stderr) <= limit:
+        return stderr
+    half = limit // 2
+    return f"{stderr[:half]}\n...[recortado]...\n{stderr[-half:]}"
+
+
 def _ffmpeg_font_path() -> str:
     """Ruta del font para drawtext, escapada para la sintaxis de filtro de
     ffmpeg. Usa la fuente empaquetada en assets/fonts (Inter, OFL) para que
@@ -211,8 +222,17 @@ def _get_stock_clips(track_row, queries: list[str], max_clips: int = 4) -> list[
                 candidate = download_video(file["link"], cache_path.with_suffix(".tmp.mp4"))
             except Exception:
                 continue
+            # brightness=None significa que ffmpeg no pudo decodificar ni
+            # un frame de prueba — casi siempre un download corrupto o
+            # incompleto. Aceptarlo "por las dudas" (como hacía antes)
+            # metía ese clip roto al concat final, donde el encoder se
+            # quedaba trabado en frame=0 sin nunca fallar limpio — visto
+            # en producción. Un probe que falla se descarta, no se acepta.
+            if candidate.stat().st_size == 0:
+                candidate.unlink(missing_ok=True)
+                continue
             brightness = _average_brightness(candidate)
-            if brightness is None or brightness >= MIN_CLIP_BRIGHTNESS:
+            if brightness is not None and brightness >= MIN_CLIP_BRIGHTNESS:
                 candidate.replace(cache_path)
                 chosen = cache_path
                 break
@@ -248,8 +268,14 @@ def _get_long_video_background(album_row) -> Path | None:
             candidate = download_video(file["link"], cache_path.with_suffix(".tmp.mp4"))
         except Exception:
             continue
+        if candidate.stat().st_size == 0:
+            candidate.unlink(missing_ok=True)
+            continue
+        # ver la nota en _get_stock_clips: un probe que no puede
+        # decodificar un frame (brightness=None) se descarta, no se
+        # acepta — casi siempre es un download corrupto/incompleto.
         brightness = _average_brightness(candidate)
-        if brightness is None or brightness >= MIN_CLIP_BRIGHTNESS:
+        if brightness is not None and brightness >= MIN_CLIP_BRIGHTNESS:
             candidate.replace(cache_path)
             return cache_path
         candidate.unlink(missing_ok=True)
@@ -385,7 +411,7 @@ def generate_reel(track_row, album_row) -> ContentItem:
         id=item_id, kind="reel", source_type="track", source_id=track_row["id"],
         title=title, description=description,
         status="rendered" if ok else "failed",
-        error=None if ok else result.stderr[-2000:],
+        error=None if ok else _summarize_ffmpeg_error(result.stderr),
         render_path=str(out_path) if out_path.exists() else None,
     )
 
@@ -489,7 +515,7 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
         id=item_id, kind="long_video", source_type="album", source_id=album_row["id"],
         title=title, description=description,
         status="rendered" if result.returncode == 0 and out_path.exists() else "failed",
-        error=None if result.returncode == 0 else result.stderr[-2000:],
+        error=None if result.returncode == 0 else _summarize_ffmpeg_error(result.stderr),
         render_path=str(out_path) if out_path.exists() else None,
     )
 

@@ -1,17 +1,22 @@
 """El CEO como curador de playlists de Spotify.
 
 Spotify bloquea "Add Items to Playlist" para apps en Development Mode
-(confirmado en vivo, 2026-08-23 — no es arreglable con más scopes ni
-más código, Extended Quota Mode exige ser una organización con 250k+
-usuarios activos mensuales). Por eso el flujo real es:
+(confirmado en vivo, 2026-08-23 y reverificado 2026-08-25 con una
+playlist de prueba real — 403 Forbidden, no es un bug de acá ni un tema
+de scopes; Extended Quota Mode exige ser una organización con 250k+
+usuarios activos mensuales). Por eso el CEO NO crea la playlist vacía
+por API — eso deja un cascarón sin canciones dando vueltas en Spotify,
+peor que no hacer nada (decisión de Santiago, 2026-08-25). El flujo real
+es:
 
-1. El CEO crea la playlist vacía (esto sí funciona vía API) con nombre
-   y descripción curados.
-2. Busca tracks públicos reales que encajen en el mood, intercalando un
-   track propio de NØBØĐ¥ cada 3-4 canciones (decisión de Santiago,
-   2026-08-23).
-3. Entrega la tracklist lista para pegar — Santiago (o quien tenga la
-   app de Spotify a mano) la agrega a mano en un par de minutos.
+1. El CEO diseña nombre, descripción y tracklist (públicos reales +
+   propios de NØBØĐ¥ intercalados cada 3-4 canciones).
+2. Entrega todo listo para pegar — Santiago (o quien tenga la app de
+   Spotify a mano) crea la playlist y agrega las canciones a mano.
+
+Si Spotify habilita Extended Quota Mode más adelante, integrations.
+spotify.client.add_tracks ya está implementado — solo falta volver a
+llamar create_playlist()/add_tracks() acá.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import anthropic
 from brain.content.store import ContentItem, already_used_source_ids, insert
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
-from integrations.spotify.client import create_playlist, search_track
+from integrations.spotify.client import search_track
 
 CLAUDE_MODEL = "claude-sonnet-5"
 PUBLIC_TRACKS_PER_NOBODY_TRACK = 3  # 1 track propio cada 3 públicos
@@ -142,8 +147,13 @@ def _build_tracklist(brief: dict, sample_albums: list[str]) -> list[dict]:
     return tracklist
 
 
-def format_tracklist_message(item_title: str, url: str, tracklist: list[dict]) -> str:
-    lines = [f"Playlist creada: '{item_title}'", url, "", "Pega estos tracks en orden:"]
+def format_tracklist_message(item_title: str, description: str, tracklist: list[dict]) -> str:
+    lines = [
+        f"Playlist curada: '{item_title}'",
+        description,
+        "",
+        "Creála en Spotify y pegá estos tracks en orden:",
+    ]
     for i, t in enumerate(tracklist, 1):
         tag = " ← NØBØĐ¥" if t["is_nobody"] else ""
         lines.append(f"{i}. {t['name']} — {t['artist']}{tag}")
@@ -155,7 +165,11 @@ def format_tracklist_message(item_title: str, url: str, tracklist: list[dict]) -
 
 def generate_playlist() -> tuple[ContentItem, str] | None:
     """Devuelve (ContentItem, mensaje_con_tracklist) o None si no hay
-    géneros nuevos para armar playlist."""
+    géneros nuevos para curar. No crea nada en Spotify — 'Add Items to
+    Playlist' está bloqueado por Development Mode (ver docstring del
+    módulo), así que una playlist vacía es peor que ninguna. El
+    ContentItem queda status='draft': curado, pendiente de que alguien
+    lo cree a mano."""
     conn = connect()
     picked = pick_next_playlist_genre(conn)
     if picked is None:
@@ -167,19 +181,11 @@ def generate_playlist() -> tuple[ContentItem, str] | None:
     tracklist = _build_tracklist(brief, sample_albums)
 
     item_id = f"playlist-{genre_tag.lower()}-{uuid.uuid4().hex[:6]}"
-    try:
-        playlist_id = create_playlist(brief["name"], brief["description"], public=True)
-        status, error = "published", None
-        url = f"https://open.spotify.com/playlist/{playlist_id}"
-    except Exception as e:
-        playlist_id, status, error, url = None, "failed", str(e)[:2000], None
-
     item = ContentItem(
         id=item_id, kind="playlist", source_type="genre", source_id=genre_tag,
         title=brief["name"],
-        description=brief["description"] + " [tracklist pendiente de agregar a mano]",
-        status=status, platform="spotify" if playlist_id else None,
-        platform_video_id=playlist_id, error=error,
+        description=brief["description"] + " [pendiente de crear y cargar a mano en Spotify]",
+        status="draft",
     )
     insert(conn, item)
     nobody_count = sum(1 for t in tracklist if t["is_nobody"])
@@ -188,22 +194,19 @@ def generate_playlist() -> tuple[ContentItem, str] | None:
         Decision(
             objective_id=None,
             evidence=f"genero={genre_tag}, tracks={len(tracklist)}, propios={nobody_count}",
-            reasoning=f"[curador playlist] queries={brief['track_queries']}",
-            action=(
-                f"Playlist creada: '{brief['name']}'" + (f" ({url})" if url else " — FALLÓ")
+            reasoning=(
+                f"[curador playlist] queries={brief['track_queries']}. "
+                "No se crea en Spotify — add_tracks sigue bloqueado (403, "
+                "Development Mode), una playlist vacía es peor que ninguna."
             ),
-            expected_result="Descubrimiento vía playlist pública, con tracks propios intercalados",
-            status="executed" if status == "published" else "failed",
+            action=f"Playlist curada (pendiente de crear a mano): '{brief['name']}'",
+            expected_result="Santiago crea la playlist y pega la tracklist entregada",
         ),
     )
     conn.commit()
     conn.close()
 
-    message = (
-        format_tracklist_message(item.title, url, tracklist)
-        if status == "published"
-        else f"Falló crear la playlist de '{genre_tag}': {error}"
-    )
+    message = format_tracklist_message(item.title, brief["description"], tracklist)
     return item, message
 
 
