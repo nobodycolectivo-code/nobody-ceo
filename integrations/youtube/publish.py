@@ -54,3 +54,14 @@ def upload_video(
     while response is None:
         _, response = request.next_chunk()
     return response["id"]
+
+
+def set_thumbnail(video_id: str, thumbnail_path: str) -> None:
+    """Sube una miniatura custom para un video ya publicado. Mismo scope
+    de OAuth que upload_video (youtube.upload) — no necesita credenciales
+    aparte. Quien llama decide si falla la publicación por esto o no."""
+    youtube = build("youtube", "v3", credentials=_credentials())
+    youtube.thumbnails().set(
+        videoId=video_id,
+        media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg"),
+    ).execute()

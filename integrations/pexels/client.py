@@ -33,6 +33,28 @@ def best_vertical_file(video: dict) -> dict | None:
     return min(pool, key=lambda f: abs((f.get("width") or 0) - 1080))
 
 
+def search_horizontal_video(query: str, per_page: int = 5) -> list[dict]:
+    """Igual que search_vertical_video pero orientación landscape — fondo
+    de los videos largos (1280x720), que no son verticales como los reels."""
+    resp = requests.get(
+        SEARCH_URL,
+        headers={"Authorization": os.environ["PEXELS_API_KEY"]},
+        params={"query": query, "orientation": "landscape", "per_page": per_page, "size": "medium"},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json().get("videos", [])
+
+
+def best_horizontal_file(video: dict) -> dict | None:
+    files = video.get("video_files", [])
+    horizontals = [f for f in files if (f.get("width") or 0) > (f.get("height") or 0)]
+    pool = horizontals or files
+    if not pool:
+        return None
+    return min(pool, key=lambda f: abs((f.get("width") or 0) - 1280))
+
+
 def download_video(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     resp = requests.get(url, stream=True, timeout=60)

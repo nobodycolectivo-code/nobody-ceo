@@ -42,7 +42,10 @@ REELS_POR_CICLO = 3
 
 
 def _publish_item(conn, item, is_short: bool) -> None:
+    from pathlib import Path
+
     from brain.content.store import mark_failed, mark_published
+    from integrations.youtube.publish import set_thumbnail
 
     if item.status != "rendered":
         return
@@ -55,6 +58,18 @@ def _publish_item(conn, item, is_short: bool) -> None:
         )
         mark_published(conn, item.id, video_id)
         conn.commit()
+
+        if item.kind == "long_video":
+            # La miniatura es un frame extraído del propio render (ver
+            # agents.capabilities.content.extract_thumbnail) — si falla
+            # no se falla la publicación, el video ya está arriba.
+            thumbnail_path = Path(item.render_path).with_suffix(".thumb.jpg")
+            if thumbnail_path.exists():
+                try:
+                    set_thumbnail(video_id, str(thumbnail_path))
+                except Exception:
+                    pass
+
         record_decision(
             conn,
             Decision(
@@ -117,8 +132,9 @@ def run_cycle(force: bool = False) -> dict:
     actions_taken = []
 
     # HYPOTHESIZE + DECIDE + ACT: reels (varios por ciclo)
+    failed_this_cycle: set[str] = set()
     for _ in range(REELS_POR_CICLO):
-        track = pick_next_reel_source(conn)
+        track = pick_next_reel_source(conn, exclude=frozenset(failed_this_cycle))
         if track is None:
             break
         album = conn.execute(
@@ -140,6 +156,8 @@ def run_cycle(force: bool = False) -> dict:
             ),
         )
         conn.commit()
+        if reel.status == "failed":
+            failed_this_cycle.add(track["id"])
         _publish_item(conn, reel, is_short=True)
         final = conn.execute(
             "SELECT status, platform_video_id FROM content_items WHERE id = ?", (reel.id,)

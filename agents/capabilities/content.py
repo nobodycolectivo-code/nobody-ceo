@@ -24,7 +24,13 @@ from agents.capabilities.catalogue_cache import resolve_catalogue_file
 from brain.content.store import ContentItem, already_used_source_ids, insert, mark_rendered
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
-from integrations.pexels.client import best_vertical_file, download_video, search_vertical_video
+from integrations.pexels.client import (
+    best_horizontal_file,
+    best_vertical_file,
+    download_video,
+    search_horizontal_video,
+    search_vertical_video,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_FONT_PATH = REPO_ROOT / "assets" / "fonts" / "Inter-Regular.ttf"
@@ -216,6 +222,61 @@ def _get_stock_clips(track_row, queries: list[str], max_clips: int = 4) -> list[
     return clips
 
 
+def _get_long_video_background(album_row) -> Path | None:
+    """Un clip horizontal de stock para fondo del video largo, cuando el
+    álbum no tiene portada — reemplaza la tarjeta negra plana por algo
+    con movimiento sutil, con el mismo criterio de género que los reels
+    (GENRE_TO_STOCK_QUERY). Cachea por álbum. None si Pexels falla o no
+    hay candidato válido — nunca bloquea el render, cae a la tarjeta de
+    marca como antes."""
+    safe_id = album_row["id"].replace("/", "-")
+    cache_path = STOCK_CACHE_DIR / f"longvideo-{safe_id}.mp4"
+    if cache_path.exists():
+        return cache_path
+
+    query = GENRE_TO_STOCK_QUERY.get(album_row["genre_tag"], DEFAULT_STOCK_QUERY)
+    try:
+        videos = search_horizontal_video(query, per_page=3)
+    except Exception:
+        return None
+
+    for video in videos:
+        file = best_horizontal_file(video)
+        if not file or not file.get("link"):
+            continue
+        try:
+            candidate = download_video(file["link"], cache_path.with_suffix(".tmp.mp4"))
+        except Exception:
+            continue
+        brightness = _average_brightness(candidate)
+        if brightness is None or brightness >= MIN_CLIP_BRIGHTNESS:
+            candidate.replace(cache_path)
+            return cache_path
+        candidate.unlink(missing_ok=True)
+    return None
+
+
+def extract_thumbnail(video_path: Path, at_seconds: float | None = None) -> Path | None:
+    """Extrae un frame del video ya renderizado como thumbnail — refleja
+    lo que el video realmente muestra (portada, stock o tarjeta de marca),
+    en vez de generar una imagen aparte que podría no coincidir. None si
+    ffmpeg falla (nunca bloquea la publicación por esto)."""
+    duration = _ffprobe_duration(video_path) or 60.0
+    at_seconds = at_seconds if at_seconds is not None else min(duration * 0.15, 30.0)
+    thumb_path = video_path.with_suffix(".thumb.jpg")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-ss", str(at_seconds), "-i", str(video_path),
+                "-frames:v", "1", "-q:v", "3", str(thumb_path),
+            ],
+            capture_output=True, timeout=30,
+        )
+        return thumb_path if result.returncode == 0 and thumb_path.exists() else None
+    except Exception:
+        return None
+
+
 HOOK_WINDOW = 4  # segundos que dura el hook de apertura
 CTA_WINDOW = 8  # segundos finales reservados para el CTA
 
@@ -257,9 +318,15 @@ def generate_reel(track_row, album_row) -> ContentItem:
         clip_inputs: list[str] = []
         for clip in clips:
             clip_inputs += ["-stream_loop", "-1", "-t", f"{segment_dur:.2f}", "-i", str(clip)]
+        # fps=30 normaliza el frame rate de CADA clip de stock antes del
+        # concat — un clip con metadata de fps corrupta/absurda (visto en
+        # producción: libx264 rechazó el encode por "MB rate > level
+        # limit", producido por un frame rate de entrada anómalo que
+        # scale/crop no tocan) puede arrastrar esa tasa hasta el encoder
+        # final si no se fuerza acá.
         scaled = "".join(
             f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,eq=brightness=-0.1[c{i}];"
+            f"crop=1080:1920,eq=brightness=-0.1,fps=30[c{i}];"
             for i in range(len(clips))
         )
         concat_labels = "".join(f"[c{i}]" for i in range(len(clips)))
@@ -297,6 +364,7 @@ def generate_reel(track_row, album_row) -> ContentItem:
         "-t", str(REEL_DURATION),
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", f"{audio_input_index}:a",
+        "-r", "30",
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
@@ -353,12 +421,30 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
 
     artwork_path = resolve_catalogue_file(album_row["artwork_path"])
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
+    background_clip = None if has_artwork else _get_long_video_background(album_row)
     font = _ffmpeg_font_path()
     album_title = _escape_drawtext(album_row["title"])
+    tune_args: list[str] = []
 
     if has_artwork:
         bg_input = ["-loop", "1", "-i", artwork_path]
         vf = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"
+        tune_args = ["-tune", "stillimage"]
+    elif background_clip:
+        # Stock de fondo en vez de la tarjeta negra plana — mismo criterio
+        # de género que los reels (GENRE_TO_STOCK_QUERY). fps=30 normaliza
+        # el frame rate del clip (ver generate_reel: un clip con metadata
+        # de fps corrupta puede tumbar el encode con "MB rate > level limit").
+        bg_input = ["-stream_loop", "-1", "-i", str(background_clip)]
+        vf = (
+            f"scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,"
+            f"eq=brightness=-0.25,fps=30,"
+            f"drawtext=fontfile='{font}':text='{album_title}':fontcolor=white:"
+            f"fontsize=48:box=1:boxcolor=black@0.4:boxborderw=14:"
+            f"x=(w-text_w)/2:y=h-110,"
+            f"drawtext=fontfile='{font}':text='NØBØĐ¥ Records':fontcolor=white@0.7:"
+            f"fontsize=26:x=(w-text_w)/2:y=h-60"
+        )
     else:
         bg_input = ["-f", "lavfi", "-i", f"color=c={FALLBACK_BG_COLOR}:s=1280x720"]
         vf = (
@@ -367,6 +453,7 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
             f"drawtext=fontfile='{font}':text='NØBØĐ¥ Records':fontcolor=white@0.6:"
             f"fontsize=30:x=(w-text_w)/2:y=(h-text_h)/2+50"
         )
+        tune_args = ["-tune", "stillimage"]
 
     audio_inputs = []
     for t in tracks:
@@ -379,10 +466,13 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
         *bg_input, *audio_inputs,
         "-filter_complex", filter_complex,
         "-map", "[bgv]", "-map", "[outa]",
-        "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+        "-r", "30",
+        "-c:v", "libx264", *tune_args, "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+    thumbnail_path = extract_thumbnail(out_path) if result.returncode == 0 and out_path.exists() else None
 
     track_list = ", ".join(t["title"] for t in tracks)
     meta = _metadata(
@@ -428,10 +518,17 @@ def pick_next_long_video_source(conn):
     return None, None
 
 
-def pick_next_reel_source(conn) -> tuple | None:
+def pick_next_reel_source(conn, exclude: frozenset[str] = frozenset()) -> tuple | None:
     """Elige el siguiente track sin reel generado todavía. Orden simple y
     determinístico (por álbum, por título) — no es una heurística de
-    performance, solo evita repetir mientras no haya métricas por asset."""
+    performance, solo evita repetir mientras no haya métricas por asset.
+
+    `exclude` es para tracks que ya fallaron EN ESTE MISMO ciclo — un
+    reel fallido no cuenta como "usado" (already_used_source_ids solo
+    cuenta status != 'failed', a propósito, para poder reintentar en el
+    próximo ciclo si fue algo transitorio), pero sin este parámetro el
+    loop de reintentos dentro de un mismo ciclo puede quedar atascado
+    eligiendo el mismo track que acaba de fallar una y otra vez."""
     used = already_used_source_ids(conn, "reel")
     rows = conn.execute(
         """
@@ -441,7 +538,7 @@ def pick_next_reel_source(conn) -> tuple | None:
         """
     ).fetchall()
     for row in rows:
-        if row["id"] not in used:
+        if row["id"] not in used and row["id"] not in exclude:
             return row
     return None
 
