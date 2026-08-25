@@ -58,15 +58,18 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-") or "sin-nombre"
 
 
-def _summarize_ffmpeg_error(stderr: str, limit: int = 2000) -> str:
-    """Guarda el principio (donde ffmpeg reporta los streams de entrada y
-    el primer error real) y el final (estado final) del stderr, en vez de
-    solo la cola — un error real casi siempre aparece cerca del inicio y
-    se pierde bajo líneas de progreso repetidas si solo se guarda [-N:]."""
+def _summarize_ffmpeg_error(stderr: str, limit: int = 3000) -> str:
+    """Guarda la parte útil del stderr en vez de solo la cola — la línea
+    de configuración de build de ffmpeg (--enable-x --enable-y...) puede
+    ocupar 1000+ caracteres ella sola y desplazar la sección real
+    (análisis de inputs, mapping, primer error) fuera de la ventana. Si
+    aparece "Input #0" se arranca ahí; si no, desde el principio."""
     if len(stderr) <= limit:
         return stderr
     half = limit // 2
-    return f"{stderr[:half]}\n...[recortado]...\n{stderr[-half:]}"
+    start = stderr.find("Input #0")
+    head_start = start if start != -1 else 0
+    return f"{stderr[head_start:head_start + half]}\n...[recortado]...\n{stderr[-half:]}"
 
 
 def _ffmpeg_font_path() -> str:
@@ -383,15 +386,23 @@ def generate_reel(track_row, album_row) -> ContentItem:
         "[art][wave]overlay=(W-w)/2:H-300[vout]"
     )
 
+    # -threads/-filter_threads acotados: en el contenedor de Railway
+    # ffmpeg detecta el CPU count del HOST (visto en logs: threads=60),
+    # no el límite real asignado al contenedor — con 3-4 clips
+    # decodificándose a la vez más el filtro de concat/overlay, ese
+    # sobre-threading agota memoria/CPU y el encoder se queda trabado en
+    # frame=0 sin fallar limpio (visto en producción, reproducible con
+    # varios clips distintos). Limitarlo explícitamente es la forma
+    # estándar de evitar ese problema conocido de ffmpeg en contenedores.
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-threads", "2", "-filter_threads", "2",
         *bg_input,
         "-i", audio_path,
         "-t", str(REEL_DURATION),
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", f"{audio_input_index}:a",
         "-r", "30",
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -487,13 +498,16 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
     concat_labels = "".join(f"[{i + 1}:a]" for i in range(len(tracks)))
     filter_complex = f"[0:v]{vf}[bgv];{concat_labels}concat=n={len(tracks)}:v=0:a=1[outa]"
 
+    # ver la nota en generate_reel sobre -threads/-filter_threads: evita
+    # que ffmpeg sobre-asigne hilos según el CPU count del host en vez
+    # del límite real del contenedor.
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-threads", "2", "-filter_threads", "2",
         *bg_input, *audio_inputs,
         "-filter_complex", filter_complex,
         "-map", "[bgv]", "-map", "[outa]",
         "-r", "30",
-        "-c:v", "libx264", *tune_args, "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", *tune_args, "-threads", "2", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
