@@ -19,6 +19,35 @@ import os
 from pathlib import Path
 
 CATALOGUE_CACHE_DIR = Path(os.environ.get("NOBODY_CATALOGUE_CACHE_DIR", "render_output/catalogue_cache"))
+# Deliberadamente NO vive en /data (el volumen de 500MB ya está justo con
+# la base, los renders pendientes y el cache de stock) — queda en el
+# filesystem efímero del contenedor, que se limpia solo en cada restart.
+# Pero un video largo puede descargar 8 tracks .wav sin comprimir de un
+# álbum (150-400MB fácil) y ESE filesystem también tiene cupo limitado —
+# visto en producción, 2026-08-26: "Conversion failed!" al final de un
+# render de 23 minutos, con toda la pinta de quedarse sin espacio justo
+# al escribir el archivo final. Sin tope, esto crece sin límite dentro
+# de la vida del contenedor.
+CATALOGUE_CACHE_MAX_BYTES = 400_000_000
+
+
+def _prune_catalogue_cache(max_bytes: int = CATALOGUE_CACHE_MAX_BYTES) -> None:
+    if not CATALOGUE_CACHE_DIR.exists():
+        return
+    files = [f for f in CATALOGUE_CACHE_DIR.rglob("*") if f.is_file()]
+    total = sum(f.stat().st_size for f in files)
+    if total <= max_bytes:
+        return
+    files.sort(key=lambda f: f.stat().st_atime)  # más antiguo (por uso) primero
+    for f in files:
+        if total <= max_bytes:
+            break
+        size = f.stat().st_size
+        try:
+            f.unlink()
+            total -= size
+        except OSError:
+            continue
 
 
 def resolve_catalogue_file(relative_path: str | None) -> str | None:
@@ -37,6 +66,8 @@ def resolve_catalogue_file(relative_path: str | None) -> str | None:
         candidate = Path(local_root) / relative_path
         if candidate.exists():
             return str(candidate)
+
+    _prune_catalogue_cache()
 
     from integrations.r2.client import download_file
 
