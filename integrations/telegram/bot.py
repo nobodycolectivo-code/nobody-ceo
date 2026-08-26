@@ -290,8 +290,8 @@ async def handle_reel_approval_callback(update: Update, context: ContextTypes.DE
     conn.close()
 
     if final["status"] == "published":
-        if item_row["render_path"]:
-            Path(item_row["render_path"]).unlink(missing_ok=True)
+        # publish_item ya borró el .mp4 (y la miniatura si había) — no
+        # hace falta repetirlo acá.
         await query.edit_message_caption(
             caption=f"{query.message.caption}\n\n✅ Publicado: https://youtu.be/{final['platform_video_id']}",
             reply_markup=None,

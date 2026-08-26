@@ -69,16 +69,24 @@ def publish_item(conn, item, is_short: bool) -> None:
         mark_published(conn, item.id, video_id)
         conn.commit()
 
+        thumbnail_path = Path(item.render_path).with_suffix(".thumb.jpg")
         if item.kind == "long_video":
             # La miniatura es un frame extraído del propio render (ver
             # agents.capabilities.content.extract_thumbnail) — si falla
             # no se falla la publicación, el video ya está arriba.
-            thumbnail_path = Path(item.render_path).with_suffix(".thumb.jpg")
             if thumbnail_path.exists():
                 try:
                     set_thumbnail(video_id, str(thumbnail_path))
                 except Exception:
                     pass
+
+        # Ya está en YouTube — el .mp4 (y su miniatura) no hacen falta más.
+        # El volumen de Railway es de 500MB compartido con la base y el
+        # stock_cache; sin esto un video largo puede quedar acumulado
+        # 30-150MB para siempre y tumbar el disco (visto en producción,
+        # 2026-08-26: "database or disk is full").
+        Path(item.render_path).unlink(missing_ok=True)
+        thumbnail_path.unlink(missing_ok=True)
 
         record_decision(
             conn,

@@ -213,6 +213,33 @@ def _creative_brief(track_row, album_row) -> dict:
 
 
 MIN_CLIP_BRIGHTNESS = 40  # 0-255; por debajo de esto, el clip se ve casi negro
+STOCK_CACHE_MAX_BYTES = 100_000_000  # 100MB — ver _prune_stock_cache
+
+
+def _prune_stock_cache(max_bytes: int = STOCK_CACHE_MAX_BYTES) -> None:
+    """El volumen de Railway (500MB) se comparte entre la base, los
+    renders pendientes de aprobación y este cache — sin un tope, crece
+    sin límite (visto en producción, 2026-08-26: 159MB de cache propio
+    contribuyendo a "database or disk is full"). Se llama antes de
+    descargar clips nuevos; borra los menos usados recientemente hasta
+    volver a estar bajo el tope. El cache siempre se puede reconstruir
+    descargando de Pexels de nuevo — no hay pérdida de datos real."""
+    if not STOCK_CACHE_DIR.exists():
+        return
+    files = [f for f in STOCK_CACHE_DIR.iterdir() if f.is_file()]
+    total = sum(f.stat().st_size for f in files)
+    if total <= max_bytes:
+        return
+    files.sort(key=lambda f: f.stat().st_atime)  # más antiguo (por uso) primero
+    for f in files:
+        if total <= max_bytes:
+            break
+        size = f.stat().st_size
+        try:
+            f.unlink()
+            total -= size
+        except OSError:
+            continue
 
 
 def _average_brightness(video_path: Path, at_seconds: float = 2.0) -> float | None:
@@ -246,6 +273,7 @@ def _get_stock_clips(
     se vuelve a consultar Pexels para un clip ya descargado); se usa para
     registrar used_assets (memoria creativa, Fase 1) y más adelante
     deduplicar entre piezas distintas (Fase 2)."""
+    _prune_stock_cache()
     clips: list[tuple[Path, str | None]] = []
     safe_id = track_row["id"].replace("/", "-")
     for i, query in enumerate(queries[:max_clips]):
@@ -296,6 +324,7 @@ def _get_long_video_background(album_row) -> tuple[Path, str | None] | None:
     hay candidato válido — nunca bloquea el render, cae a la tarjeta de
     marca como antes. Devuelve (path, pexels_video_id); el id es None en
     cache-hit, igual que _get_stock_clips."""
+    _prune_stock_cache()
     safe_id = album_row["id"].replace("/", "-")
     cache_path = STOCK_CACHE_DIR / f"longvideo-{safe_id}.mp4"
     if cache_path.exists():
@@ -585,6 +614,12 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
     # ver la nota en generate_reel sobre -threads/-filter_threads: evita
     # que ffmpeg sobre-asigne hilos según el CPU count del host en vez
     # del límite real del contenedor.
+    # -crf/-maxrate/-bufsize: sin esto un video largo con fondo de stock
+    # (movimiento, no imagen fija) puede pesar 150MB+ para un álbum largo
+    # — pasó en producción, 2026-08-26 (159MB, contribuyó a "database or
+    # disk is full" en un volumen de 500MB compartido). Es audio de fondo,
+    # no necesita alta calidad visual; el tope acota el tamaño máximo de
+    # forma predecible sin importar cuánto movimiento tenga el clip.
     cmd = [
         "ffmpeg", "-y", "-threads", "2", "-filter_threads", "2",
         *bg_input, *audio_inputs,
@@ -592,6 +627,7 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
         "-map", "[bgv]", "-map", "[outa]",
         "-r", "30",
         "-c:v", "libx264", *tune_args, "-threads", "2", "-pix_fmt", "yuv420p",
+        "-crf", "30", "-maxrate", "600k", "-bufsize", "1200k",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
