@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import textwrap
 import uuid
 from pathlib import Path
 
@@ -92,6 +93,27 @@ def _escape_drawtext(text: str) -> str:
         .replace("'", r"\'")
         .replace(",", r"\,")
     )
+
+
+REEL_FRAME_WIDTH = 1080
+TEXT_SAFE_MARGIN = 80  # px de cada lado — nunca pegado al borde
+
+
+def _wrap_for_drawtext(text: str, fontsize: int, frame_width: int = REEL_FRAME_WIDTH) -> str:
+    """Envuelve el texto en varias líneas antes de pasarlo a drawtext —
+    sin esto, hook/body/cta largos se salen del frame en vez de cortarse
+    o achicarse solos (drawtext no hace wrap ni auto-shrink). El ancho de
+    línea es una estimación conservadora (no mide la fuente real), pero
+    errar corto es preferible a que el texto se corte contra el borde.
+    Se llama sobre el texto CRUDO, antes de _escape_drawtext — el salto
+    de línea real (no escapado) es lo que drawtext interpreta como
+    quiebre de línea."""
+    if not text:
+        return text
+    usable_width = frame_width - 2 * TEXT_SAFE_MARGIN
+    avg_char_width = fontsize * 0.58  # aproximación para una fuente sans proporcional
+    chars_per_line = max(10, int(usable_width / avg_char_width))
+    return textwrap.fill(text, width=chars_per_line)
 
 
 def _metadata(prompt: str) -> dict:
@@ -262,13 +284,20 @@ def _average_brightness(video_path: Path, at_seconds: float = 2.0) -> float | No
 
 
 def _get_stock_clips(
-    track_row, queries: list[str], max_clips: int = 4
+    track_row, queries: list[str], max_clips: int = 4,
+    exclude_pexels_ids: frozenset[str] = frozenset(),
 ) -> list[tuple[Path, str | None]]:
     """Descarga (o reutiliza de cache) un clip vertical por cada query del
     brief creativo — cacheado por track, porque el brief es por canción,
     no por álbum. Prueba hasta 3 resultados por query y descarta los que
     salen casi negros (pasa en la práctica con clips tipo 'cymatics' o
     de fondo oscuro) antes de conformarse con uno.
+
+    `exclude_pexels_ids` evita repetir el mismo clip entre reels que se
+    publican juntos (decisión 2026-08-26) — agents.ceo.loop acumula los
+    ids ya usados en el ciclo actual y los pasa acá. Si TODOS los
+    candidatos de una query ya están excluidos, se degrada con gracia
+    (mejor un clip repetido que ningún reel).
 
     Devuelve (path, pexels_video_id) — el id es None en un cache-hit (no
     se vuelve a consultar Pexels para un clip ya descargado); se usa para
@@ -289,6 +318,9 @@ def _get_stock_clips(
         chosen = None
         chosen_pexels_id = None
         for video in videos:
+            vid_id = str(video.get("id")) if video.get("id") is not None else None
+            if vid_id and vid_id in exclude_pexels_ids:
+                continue
             file = best_vertical_file(video)
             if not file or not file.get("link"):
                 continue
@@ -309,7 +341,7 @@ def _get_stock_clips(
             if brightness is not None and brightness >= MIN_CLIP_BRIGHTNESS:
                 candidate.replace(cache_path)
                 chosen = cache_path
-                chosen_pexels_id = str(video.get("id")) if video.get("id") is not None else None
+                chosen_pexels_id = vid_id
                 break
             candidate.unlink(missing_ok=True)
         if chosen:
@@ -386,14 +418,19 @@ CTA_WINDOW = 8  # segundos finales reservados para el CTA
 BODY_WINDOW = 6  # segundos que dura el cuerpo/historia, centrado en el reel
 
 
-def generate_reel(track_row, album_row) -> ContentItem:
+def generate_reel(
+    track_row, album_row, exclude_pexels_ids: frozenset[str] = frozenset()
+) -> ContentItem:
     """Reel vertical 1080x1920 de REEL_DURATION segundos: montaje de varios
     clips de stock elegidos por el CEO como curador para esta canción
     específica (brief vía Claude, ver _creative_brief), waveform del
     audio real de fondo, y una historia de tres actos en pantalla — hook
     al abrir, cuerpo (micro-intención) al centro, CTA que cierra la
     historia al final (decisión 2026-08-26, ver _creative_brief).
-    `track_row`/`album_row` son sqlite3.Row de brain.catalogue.store."""
+    `track_row`/`album_row` son sqlite3.Row de brain.catalogue.store.
+    `exclude_pexels_ids`: clips ya usados por OTROS reels del mismo ciclo
+    (ver agents.ceo.loop) — evita que dos reels publicados juntos se
+    vean con el mismo fondo."""
     item_id = f"reel-{track_row['id'].replace('/', '-')}-{uuid.uuid4().hex[:6]}"
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RENDER_DIR / f"{item_id}.mp4"
@@ -403,16 +440,20 @@ def generate_reel(track_row, album_row) -> ContentItem:
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
 
     brief = _creative_brief(track_row, album_row)
-    clip_results = _get_stock_clips(track_row, brief["clip_queries"])
+    clip_results = _get_stock_clips(
+        track_row, brief["clip_queries"], exclude_pexels_ids=exclude_pexels_ids
+    )
     clips = [path for path, _pexels_id in clip_results]
 
     font = _ffmpeg_font_path()
     hook_raw = brief.get("hook") or track_row["title"]
     body_raw = brief.get("body") or ""
     cta_raw = brief.get("cta") or "La música continúa en NØBØĐ¥."
-    hook = _escape_drawtext(hook_raw)
-    body_text = _escape_drawtext(body_raw)
-    cta = _escape_drawtext(cta_raw)
+    # fontsize acá tiene que ser el mismo que en los *_block de abajo —
+    # el ancho de wrap depende del tamaño de letra real.
+    hook = _escape_drawtext(_wrap_for_drawtext(hook_raw, fontsize=52))
+    body_text = _escape_drawtext(_wrap_for_drawtext(body_raw, fontsize=38))
+    cta = _escape_drawtext(_wrap_for_drawtext(cta_raw, fontsize=40))
     body_start = (REEL_DURATION - BODY_WINDOW) / 2
     body_end = body_start + BODY_WINDOW
     hook_block = (

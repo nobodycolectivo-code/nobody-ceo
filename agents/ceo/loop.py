@@ -37,6 +37,7 @@ from agents.capabilities.content import (
 from agents.capabilities.engage import run_engagement_cycle
 from agents.capabilities.metrics import sync_video_metrics, sync_youtube_metrics
 from agents.capabilities.playlist import generate_playlist
+from brain.creative.store import assets_for_item
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
 from brain.learnings.store import record as record_learning
@@ -151,6 +152,7 @@ def run_cycle(force: bool = False) -> dict:
 
     # HYPOTHESIZE + DECIDE + ACT: reels (varios por ciclo)
     failed_this_cycle: set[str] = set()
+    used_pexels_ids_this_cycle: set[str] = set()
     for _ in range(REELS_POR_CICLO):
         track = pick_next_reel_source(conn, exclude=frozenset(failed_this_cycle))
         if track is None:
@@ -158,7 +160,15 @@ def run_cycle(force: bool = False) -> dict:
         album = conn.execute(
             "SELECT * FROM albums WHERE id = ?", (track["album_id"],)
         ).fetchone()
-        reel = generate_reel(track, album)
+        # exclude_pexels_ids evita que dos reels de este mismo ciclo (se
+        # publican juntos) terminen con el mismo fondo de stock — decisión
+        # 2026-08-26.
+        reel = generate_reel(
+            track, album, exclude_pexels_ids=frozenset(used_pexels_ids_this_cycle)
+        )
+        used_pexels_ids_this_cycle |= {
+            r["asset_ref"] for r in assets_for_item(conn, reel.id)
+        }
         record_decision(
             conn,
             Decision(
