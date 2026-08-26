@@ -547,6 +547,15 @@ def generate_reel(
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     ok = result.returncode == 0 and out_path.exists()
 
+    # ffmpeg puede dejar un archivo parcial en disco aunque falle
+    # (returncode != 0) — sin borrarlo, un render fallido queda ocupando
+    # espacio para siempre (visto en producción, 2026-08-26: acumulación
+    # de renders fallidos contribuyendo a "database or disk is full").
+    # Un render fallido nunca se reintenta desde el archivo parcial, así
+    # que no hay razón para conservarlo.
+    if not ok:
+        out_path.unlink(missing_ok=True)
+
     # Chequeo de tamaño real como red de seguridad además del tope de
     # bitrate — si por lo que sea el archivo igual queda muy grande para
     # que Telegram lo mande, mejor marcarlo failed acá (razón clara,
@@ -695,8 +704,16 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    ok = result.returncode == 0 and out_path.exists()
 
-    thumbnail_path = extract_thumbnail(out_path) if result.returncode == 0 and out_path.exists() else None
+    # ver la nota en generate_reel: un render fallido no se reintenta
+    # desde el archivo parcial que ffmpeg pudo haber dejado — sin
+    # borrarlo, queda ocupando espacio para siempre. Un video largo
+    # fallido "a medio codificar" puede pesar decenas/cientos de MB.
+    if not ok:
+        out_path.unlink(missing_ok=True)
+
+    thumbnail_path = extract_thumbnail(out_path) if ok else None
 
     track_list = ", ".join(t["title"] for t in tracks)
     meta = _metadata(
@@ -712,9 +729,9 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
     item = ContentItem(
         id=item_id, kind="long_video", source_type="album", source_id=album_row["id"],
         title=title, description=description,
-        status="rendered" if result.returncode == 0 and out_path.exists() else "failed",
-        error=None if result.returncode == 0 else _summarize_ffmpeg_error(result.stderr),
-        render_path=str(out_path) if out_path.exists() else None,
+        status="rendered" if ok else "failed",
+        error=None if ok else _summarize_ffmpeg_error(result.stderr),
+        render_path=str(out_path) if ok else None,
     )
 
     conn = connect()
