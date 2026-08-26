@@ -22,6 +22,7 @@ import anthropic
 
 from agents.capabilities.catalogue_cache import resolve_catalogue_file
 from brain.content.store import ContentItem, already_used_source_ids, insert, mark_rendered
+from brain.creative.store import CreativeBrief, UsedAsset, record_brief, record_used_asset
 from brain.db import connect
 from brain.decisions.store import Decision, record as record_decision
 from integrations.pexels.client import (
@@ -199,24 +200,32 @@ def _average_brightness(video_path: Path, at_seconds: float = 2.0) -> float | No
         return None
 
 
-def _get_stock_clips(track_row, queries: list[str], max_clips: int = 4) -> list[Path]:
+def _get_stock_clips(
+    track_row, queries: list[str], max_clips: int = 4
+) -> list[tuple[Path, str | None]]:
     """Descarga (o reutiliza de cache) un clip vertical por cada query del
     brief creativo — cacheado por track, porque el brief es por canción,
     no por álbum. Prueba hasta 3 resultados por query y descarta los que
     salen casi negros (pasa en la práctica con clips tipo 'cymatics' o
-    de fondo oscuro) antes de conformarse con uno."""
-    clips: list[Path] = []
+    de fondo oscuro) antes de conformarse con uno.
+
+    Devuelve (path, pexels_video_id) — el id es None en un cache-hit (no
+    se vuelve a consultar Pexels para un clip ya descargado); se usa para
+    registrar used_assets (memoria creativa, Fase 1) y más adelante
+    deduplicar entre piezas distintas (Fase 2)."""
+    clips: list[tuple[Path, str | None]] = []
     safe_id = track_row["id"].replace("/", "-")
     for i, query in enumerate(queries[:max_clips]):
         cache_path = STOCK_CACHE_DIR / f"{safe_id}-{i}.mp4"
         if cache_path.exists():
-            clips.append(cache_path)
+            clips.append((cache_path, None))
             continue
         try:
             videos = search_vertical_video(query, per_page=3)
         except Exception:
             continue
         chosen = None
+        chosen_pexels_id = None
         for video in videos:
             file = best_vertical_file(video)
             if not file or not file.get("link"):
@@ -238,24 +247,26 @@ def _get_stock_clips(track_row, queries: list[str], max_clips: int = 4) -> list[
             if brightness is not None and brightness >= MIN_CLIP_BRIGHTNESS:
                 candidate.replace(cache_path)
                 chosen = cache_path
+                chosen_pexels_id = str(video.get("id")) if video.get("id") is not None else None
                 break
             candidate.unlink(missing_ok=True)
         if chosen:
-            clips.append(chosen)
+            clips.append((chosen, chosen_pexels_id))
     return clips
 
 
-def _get_long_video_background(album_row) -> Path | None:
+def _get_long_video_background(album_row) -> tuple[Path, str | None] | None:
     """Un clip horizontal de stock para fondo del video largo, cuando el
     álbum no tiene portada — reemplaza la tarjeta negra plana por algo
     con movimiento sutil, con el mismo criterio de género que los reels
     (GENRE_TO_STOCK_QUERY). Cachea por álbum. None si Pexels falla o no
     hay candidato válido — nunca bloquea el render, cae a la tarjeta de
-    marca como antes."""
+    marca como antes. Devuelve (path, pexels_video_id); el id es None en
+    cache-hit, igual que _get_stock_clips."""
     safe_id = album_row["id"].replace("/", "-")
     cache_path = STOCK_CACHE_DIR / f"longvideo-{safe_id}.mp4"
     if cache_path.exists():
-        return cache_path
+        return cache_path, None
 
     query = GENRE_TO_STOCK_QUERY.get(album_row["genre_tag"], DEFAULT_STOCK_QUERY)
     try:
@@ -280,7 +291,8 @@ def _get_long_video_background(album_row) -> Path | None:
         brightness = _average_brightness(candidate)
         if brightness is not None and brightness >= MIN_CLIP_BRIGHTNESS:
             candidate.replace(cache_path)
-            return cache_path
+            pexels_id = str(video.get("id")) if video.get("id") is not None else None
+            return cache_path, pexels_id
         candidate.unlink(missing_ok=True)
     return None
 
@@ -325,7 +337,8 @@ def generate_reel(track_row, album_row) -> ContentItem:
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
 
     brief = _creative_brief(track_row, album_row)
-    clips = _get_stock_clips(track_row, brief["clip_queries"])
+    clip_results = _get_stock_clips(track_row, brief["clip_queries"])
+    clips = [path for path, _pexels_id in clip_results]
 
     font = _ffmpeg_font_path()
     hook = _escape_drawtext(brief.get("hook") or track_row["title"])
@@ -428,6 +441,26 @@ def generate_reel(track_row, album_row) -> ContentItem:
 
     conn = connect()
     insert(conn, item)
+    record_brief(
+        conn,
+        CreativeBrief(
+            content_item_id=item_id,
+            hook=brief.get("hook"),
+            mood=brief.get("mood"),
+            cta=CTA_TEXT,
+            structure_json=json.dumps(
+                {"clip_queries": brief["clip_queries"], "segment_count": len(clips)},
+                ensure_ascii=False,
+            ),
+            source=brief.get("source", "fallback"),
+        ),
+    )
+    for _path, pexels_id in clip_results:
+        if pexels_id:
+            record_used_asset(
+                conn,
+                UsedAsset(content_item_id=item_id, asset_type="pexels_video", asset_ref=pexels_id),
+            )
     record_decision(
         conn,
         Decision(
@@ -458,7 +491,9 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
 
     artwork_path = resolve_catalogue_file(album_row["artwork_path"])
     has_artwork = bool(artwork_path and Path(artwork_path).exists())
-    background_clip = None if has_artwork else _get_long_video_background(album_row)
+    background_result = None if has_artwork else _get_long_video_background(album_row)
+    background_clip = background_result[0] if background_result else None
+    background_pexels_id = background_result[1] if background_result else None
     font = _ffmpeg_font_path()
     album_title = _escape_drawtext(album_row["title"])
     tune_args: list[str] = []
@@ -535,6 +570,13 @@ def generate_long_video(album_row, track_rows, max_tracks: int = 8) -> ContentIt
 
     conn = connect()
     insert(conn, item)
+    if background_pexels_id:
+        record_used_asset(
+            conn,
+            UsedAsset(
+                content_item_id=item_id, asset_type="pexels_video", asset_ref=background_pexels_id,
+            ),
+        )
     conn.commit()
     conn.close()
     return item

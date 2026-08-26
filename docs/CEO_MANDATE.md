@@ -42,7 +42,8 @@ explícitamente:
 **El CEO nunca inventa una métrica ausente.** Si el dato no está en
 `NOBODY_BRAIN`, la respuesta correcta es decir que no está, no aproximarlo.
 
-## Autonomía de publicación (decisión registrada, 2026-08-23)
+## Autonomía de publicación (decisión registrada, 2026-08-23; reels con
+## compuerta desde 2026-08-26)
 
 Santiago autorizó **autonomía total de publicación** en YouTube para
 perseguir el Objetivo 001: el CEO genera reels y videos largos desde el
@@ -53,6 +54,27 @@ queda en `brain/decisions` con su razonamiento, no de una aprobación
 previa. Si la calidad o el criterio del CEO no son consistentes, esta
 decisión se puede revertir agregando una compuerta — no está descartado,
 solo no es el punto de partida.
+
+**Excepción vigente desde 2026-08-26**: mientras se entrena el criterio
+del Creative QA (ver `docs/CEO_MANDATE.md#creative-qa`), los **reels**
+NO se publican solos — quedan `pending_review` y Santiago los aprueba o
+rechaza por Telegram (video real + botones). Video largo, comentarios y
+la curación de playlists siguen con autonomía total, sin compuerta. Esto
+es explícitamente temporal: reduce a "reel" el alcance de la autonomía
+de 2026-08-23, no la reemplaza.
+
+## Creative QA (Fase 1 — memoria creativa, 2026-08-26)
+
+Primera fase de un plan más amplio para que el CEO deje de ser una
+máquina que publica y pase a producir con criterio: hook, historia,
+audio, no-repetición de assets, copy/CTA no genéricos, un QA con score
+antes de publicar, y aprendizaje sobre performance real. Fase 1 (esto)
+solo construye la base de datos: `brain/creative` (`creative_briefs`,
+`used_assets`) estructura lo que antes vivía como texto libre en
+`Decision.reasoning` — hook, mood, CTA, clip_queries por reel, y qué
+clips de Pexels se usaron en cada pieza. No hay todavía deduplicación
+activa entre piezas ni un paso de evaluación automática — eso son fases
+siguientes, sin fecha comprometida.
 
 ## Royalty Intelligence (2026-08-24)
 

@@ -2,11 +2,16 @@
 ACT → MEASURE → LEARN, aplicado al Objetivo 001 (unlock YouTube watch
 page ads).
 
-Publica de verdad en YouTube. Autonomía total, sin aprobación por envío
-— decisión explícita de Santiago (2026-08-23), documentada en
-docs/GOVERNANCE.md. Cada acción queda registrada en brain/decisions
-antes y después de ejecutarse, para que sea auditable aunque no haya
-compuerta de aprobación.
+Publica de verdad en YouTube. Cada acción queda registrada en
+brain/decisions antes y después de ejecutarse, para que sea auditable.
+
+Excepción (decisión de Santiago, 2026-08-26 — revierte parcialmente la
+autonomía total de 2026-08-23 documentada en docs/GOVERNANCE.md): los
+REELS ya no se publican solos. Quedan en status='pending_review' y
+esperan aprobación por Telegram (botones, ver integrations.telegram.
+bot) mientras se entrena el criterio del Creative QA (Fase 1: memoria
+creativa estructurada, ver brain/creative). Video largo, comentarios y
+playlist (curación, no creación en Spotify) siguen autónomos.
 
 Política v1 (simple a propósito, ver docs/CEO_MANDATE.md sobre evitar
 abstracción prematura):
@@ -41,7 +46,12 @@ OBJECTIVE_ID = "001-unlock-watch-page-ads"
 REELS_POR_CICLO = 3
 
 
-def _publish_item(conn, item, is_short: bool) -> None:
+def publish_item(conn, item, is_short: bool) -> None:
+    """Sube `item` a YouTube si está 'rendered'. Compartida con
+    integrations.telegram.bot: el flujo normal (video largo) la llama
+    directo desde acá; el flujo de reels la llama desde el callback de
+    aprobación de Telegram, reconstruyendo un ContentItem desde la fila
+    de la base (ver bot._content_item_from_row)."""
     from pathlib import Path
 
     from brain.content.store import mark_failed, mark_published
@@ -158,7 +168,13 @@ def run_cycle(force: bool = False) -> dict:
         conn.commit()
         if reel.status == "failed":
             failed_this_cycle.add(track["id"])
-        _publish_item(conn, reel, is_short=True)
+        elif reel.status == "rendered":
+            # No se publica solo — queda esperando aprobación por Telegram
+            # (ver integrations.telegram.bot, decisión 2026-08-26).
+            from brain.content.store import mark_pending_review
+
+            mark_pending_review(conn, reel.id)
+            conn.commit()
         final = conn.execute(
             "SELECT status, platform_video_id FROM content_items WHERE id = ?", (reel.id,)
         ).fetchone()
@@ -185,7 +201,7 @@ def run_cycle(force: bool = False) -> dict:
             ),
         )
         conn.commit()
-        _publish_item(conn, long_video, is_short=False)
+        publish_item(conn, long_video, is_short=False)
         final = conn.execute(
             "SELECT status, platform_video_id FROM content_items WHERE id = ?",
             (long_video.id,),

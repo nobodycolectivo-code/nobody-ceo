@@ -69,3 +69,18 @@ Las mismas que en `.env.example`, cargadas manualmente vía
 `railway variable set` (no vía archivo — `.env` nunca se commitea ni se
 sube). Ver la nota de decisión en `.env` local sobre credenciales
 reutilizadas del pipeline anterior (YouTube, Spotify).
+
+Además, solo en Railway (no en `.env.example` — es específico del
+contenedor):
+
+```
+NOBODY_RENDER_DIR=/data/render_output
+```
+
+Sin esto, `agents/capabilities/content.py` renderiza en
+`render_output/` relativo al working directory del contenedor —
+filesystem efímero, se borra en cada redeploy/restart. Los reels quedan
+`pending_review` esperando aprobación por Telegram indefinidamente (ver
+`docs/CEO_MANDATE.md`), así que el archivo tiene que sobrevivir un
+redeploy o la aprobación falla al no encontrar el .mp4. Apuntarlo al
+volumen (`/data`, ya montado) lo resuelve.

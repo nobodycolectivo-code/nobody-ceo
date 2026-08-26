@@ -208,11 +208,38 @@ CREATE TABLE IF NOT EXISTS content_items (
     render_path    TEXT,
     title          TEXT,
     description    TEXT,
-    status         TEXT NOT NULL DEFAULT 'draft',  -- draft | rendered | published | failed
+    -- draft | rendered | pending_review | published | rejected | failed
+    -- pending_review: solo reels (decisión 2026-08-26) — renderizado,
+    -- esperando aprobación por Telegram antes de subir a YouTube.
+    status         TEXT NOT NULL DEFAULT 'draft',
     platform       TEXT,                -- youtube
     platform_video_id TEXT,
     error          TEXT,
     objective_id   TEXT REFERENCES objectives(id),
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     published_at   TEXT
+);
+
+-- ── Creative memory (Fase 1 del Creative QA, 2026-08-26) ──────────────────
+-- Estructura lo que antes solo vivía como texto libre en Decision.reasoning
+-- — sin esto "no repetición" y "aprendizaje" no tienen dónde pararse. Ver
+-- la auditoría del sprint para el razonamiento completo.
+CREATE TABLE IF NOT EXISTS creative_briefs (
+    content_item_id  TEXT PRIMARY KEY REFERENCES content_items(id),
+    hook             TEXT,
+    mood             TEXT,
+    cta              TEXT,
+    structure_json   TEXT NOT NULL,   -- clip_queries, segment_dur, etc. — JSON
+    source           TEXT NOT NULL,   -- claude | fallback
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Registro de assets de stock usados por pieza — la deduplicación real
+-- entre piezas (Fase 2) se construye sobre esto; acá solo se registra.
+CREATE TABLE IF NOT EXISTS used_assets (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_item_id  TEXT NOT NULL REFERENCES content_items(id),
+    asset_type       TEXT NOT NULL,   -- pexels_video
+    asset_ref        TEXT NOT NULL,   -- id del video en Pexels
+    used_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );

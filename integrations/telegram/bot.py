@@ -15,9 +15,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from functools import partial
+from pathlib import Path
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from agents.ceo.ask import answer
 
@@ -146,6 +155,7 @@ async def handle_genera_ahora(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(summary)
         if result.get("playlist_message"):
             await update.message.reply_text(result["playlist_message"])
+        await _send_reel_approval_requests(update.message.chat.send_video, result)
         await asyncio.to_thread(_email_report, "NOBODY CEO — ciclo on-demand", summary)
     except Exception:
         logger.exception("Error corriendo el ciclo on-demand")
@@ -179,6 +189,118 @@ async def handle_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Algo falló creando el evento — revisa los logs.")
 
 
+def _content_item_from_row(row):
+    """La fila de sqlite3 no soporta acceso por atributo (item.title) —
+    agents.ceo.loop.publish_item espera un ContentItem. Se reconstruye
+    solo con los campos del dataclass, la fila trae columnas de más
+    (created_at, published_at)."""
+    from dataclasses import fields
+
+    from brain.content.store import ContentItem
+
+    field_names = {f.name for f in fields(ContentItem)}
+    return ContentItem(**{k: row[k] for k in row.keys() if k in field_names})
+
+
+async def _send_reel_approval_requests(send_video, result: dict) -> None:
+    """Manda cada reel que quedó en pending_review con el video real +
+    botones Aprobar/Rechazar (decisión 2026-08-26, ver agents.ceo.loop).
+    `send_video` es un callable async: update.message.chat.send_video o
+    functools.partial(app.bot.send_video, chat_id=...)."""
+    from brain.content.store import get as get_content_item
+    from brain.creative.store import brief_for_item
+    from brain.db import connect
+
+    conn = connect()
+    try:
+        for action in result.get("actions", []):
+            if action["kind"] != "reel" or action["status"] != "pending_review":
+                continue
+            item = get_content_item(conn, action["id"])
+            if item is None or not item["render_path"] or not Path(item["render_path"]).exists():
+                logger.warning("Reel %s pending_review sin render_path válido", action["id"])
+                continue
+            brief = brief_for_item(conn, action["id"])
+            caption_lines = ["🎬 Reel pendiente de aprobación", "", item["title"] or ""]
+            if brief and brief["hook"]:
+                caption_lines.append(f"Hook: {brief['hook']}")
+            if brief and brief["cta"]:
+                caption_lines.append(f"CTA: {brief['cta']}")
+            caption = "\n".join(caption_lines)[:1024]
+            keyboard = InlineKeyboardMarkup(
+                [[
+                    InlineKeyboardButton("✅ Aprobar", callback_data=f"approve_reel:{item['id']}"),
+                    InlineKeyboardButton("❌ Rechazar", callback_data=f"reject_reel:{item['id']}"),
+                ]]
+            )
+            try:
+                with open(item["render_path"], "rb") as f:
+                    await send_video(video=f, caption=caption, reply_markup=keyboard)
+            except Exception:
+                logger.exception("No se pudo enviar el reel %s para aprobación", item["id"])
+    finally:
+        conn.close()
+
+
+async def handle_reel_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    founder_chat_id = int(os.environ["TELEGRAM_FOUNDER_CHAT_ID"])
+    if update.effective_chat is None or update.effective_chat.id != founder_chat_id:
+        return
+
+    action, _, item_id = (query.data or "").partition(":")
+    if action not in ("approve_reel", "reject_reel") or not item_id:
+        return
+
+    from brain.content.store import get as get_content_item, mark_rejected
+    from brain.db import connect
+
+    conn = connect()
+    item_row = get_content_item(conn, item_id)
+    if item_row is None or item_row["status"] != "pending_review":
+        conn.close()
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n(ya resuelto o no encontrado)",
+            reply_markup=None,
+        )
+        return
+
+    if action == "reject_reel":
+        mark_rejected(conn, item_id)
+        conn.commit()
+        conn.close()
+        if item_row["render_path"]:
+            Path(item_row["render_path"]).unlink(missing_ok=True)
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n❌ Rechazado", reply_markup=None
+        )
+        return
+
+    # approve_reel
+    from agents.ceo.loop import publish_item
+
+    item = _content_item_from_row(item_row)
+    await asyncio.to_thread(publish_item, conn, item, True)
+    conn.commit()
+    final = get_content_item(conn, item_id)
+    conn.close()
+
+    if final["status"] == "published":
+        if item_row["render_path"]:
+            Path(item_row["render_path"]).unlink(missing_ok=True)
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n✅ Publicado: https://youtu.be/{final['platform_video_id']}",
+            reply_markup=None,
+        )
+    else:
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n⚠️ Falló publicar: {(final['error'] or '')[:500]}",
+            reply_markup=None,
+        )
+
+
 def _cycle_summary_text(result: dict) -> str:
     if result.get("skipped"):
         return f"Ciclo del CEO: no corrió ({result.get('reason')})."
@@ -195,6 +317,10 @@ def _cycle_summary_text(result: dict) -> str:
             # agents.capabilities.playlist) — status siempre es "draft",
             # la tracklist curada va en el próximo mensaje para crear a mano.
             lines.append("- playlist: curada, pendiente de crear a mano (tracklist en el próximo mensaje)")
+        elif a["kind"] == "reel" and status == "pending_review":
+            # No se publica solo (decisión 2026-08-26) — el video real con
+            # botones Aprobar/Rechazar va en un mensaje aparte.
+            lines.append("- reel: pendiente de tu aprobación (video con botones a continuación)")
         else:
             vid = a.get("video_id")
             link = f" https://youtu.be/{vid}" if vid else ""
@@ -260,6 +386,9 @@ async def _run_cycle_periodically(app: Application) -> None:
             await app.bot.send_message(chat_id=founder_chat_id, text=summary)
             if result.get("playlist_message"):
                 await app.bot.send_message(chat_id=founder_chat_id, text=result["playlist_message"])
+            await _send_reel_approval_requests(
+                partial(app.bot.send_video, chat_id=founder_chat_id), result
+            )
             await asyncio.to_thread(_email_report, "NOBODY CEO — ciclo diario", summary)
         except Exception:
             logger.exception("Error en el ciclo del CEO")
@@ -281,6 +410,9 @@ def main() -> None:
     app.add_handler(CommandHandler("genera_ahora", handle_genera_ahora))
     app.add_handler(CommandHandler("agenda", handle_agenda))
     app.add_handler(CommandHandler("reporte_semanal", handle_reporte_semanal))
+    app.add_handler(
+        CallbackQueryHandler(handle_reel_approval_callback, pattern=r"^(approve|reject)_reel:")
+    )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info(
         "NOBODY CEO escuchando en Telegram (long-polling) — ciclo cada %sh",
