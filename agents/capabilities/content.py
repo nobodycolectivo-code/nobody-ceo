@@ -42,7 +42,8 @@ REEL_DURATION = 45  # segundos, formato short/reel
 CLAUDE_MODEL = "claude-sonnet-5"
 
 FALLBACK_BG_COLOR = "0x1b1d1c"  # coherente con el neutro del resto del proyecto
-CTA_TEXT = "SUSCRÍBETE — NØBØĐ¥ RECORDS"
+# El CTA ya no es fijo — lo genera _creative_brief() por pieza, cerrando la
+# historia (decisión 2026-08-26, tras rechazar un reel con "suscríbete").
 
 GENRE_TO_STOCK_QUERY = {
     "ANDINO": "andes mountains nature",
@@ -127,29 +128,59 @@ def _ffprobe_duration(path: Path) -> float | None:
 
 def _creative_brief(track_row, album_row) -> dict:
     """El CEO actuando como curador: para ESTA canción específica —no una
-    fórmula fija por género— decide un hook de apertura y varias
-    búsquedas de video distintas entre sí. Si Claude falla, cae a un
-    brief determinístico de una sola búsqueda por género (nunca bloquea
-    la generación), pero el camino normal es una decisión nueva cada vez."""
+    fórmula fija por género— diseña una historia de tres actos (hook,
+    cuerpo, CTA) y varias búsquedas de video distintas entre sí. Si
+    Claude falla, cae a un brief determinístico (nunca bloquea la
+    generación), pero el camino normal es una decisión nueva cada vez.
+
+    Estructura de tres actos (decisión de Santiago, 2026-08-26, tras
+    rechazar un reel con CTA genérico de "suscríbete"): cada reel es un
+    mini-documental, no un anuncio. El hook detiene el scroll, el cuerpo
+    es una micro-intención (historia/origen, viaje sensorial, una idea
+    sobre el presente, contemplación, ritual, invitación a escuchar —
+    sin explicar de más, NØBØĐ¥ se experimenta), y el CTA cierra la
+    historia invitando a continuar el viaje — nunca "suscríbete"."""
     try:
         client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         resp = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=300,
+            max_tokens=400,
             system=(
-                "Eres el curador creativo de NØBØĐ¥ Records. Para cada canción "
-                "diseñas un reel corto pensado para retener atención y volverse "
-                "viral: un hook de apertura y una selección de video de stock "
-                "que capture el mood específico de ESA canción, no una fórmula "
-                "genérica de género. Evita repetir la misma idea visual entre "
-                "las búsquedas — cada una debe aportar una imagen distinta. "
-                "Prefiere escenas luminosas y con movimiento visible (nada de "
+                "Eres el curador creativo de NØBØĐ¥ Records. Cada reel es un "
+                "mini-documental de 45 segundos, no un anuncio — una historia "
+                "del alma que invita a recordar algo, no una pieza de "
+                "marketing. Para ESTA canción específica —no una fórmula fija "
+                "por género— diseñás tres actos:\n\n"
+                "1. HOOK (abre, 0-4s): detiene el scroll. Movimiento, "
+                "misterio, belleza, contraste, o una frase breve que abra "
+                "curiosidad. Nunca una imagen o silencio sin intención.\n"
+                "2. BODY (cuerpo, mitad del reel): una micro-intención, no "
+                "una explicación — historia/origen de la música, viaje "
+                "sensorial, una idea sobre el presente, contemplación, "
+                "ritual, paisaje/cultura musical, o una invitación a "
+                "escuchar. Texto mínimo, elegante, evocador — nunca "
+                "genérico. Ejemplos de tono (no copiar literal, variar "
+                "siempre): 'Escucha lo que ocurre cuando dejas de buscar.' "
+                "'Durante unos segundos, no tenés que llegar a ningún "
+                "lugar.' 'Quizá esta música no quiere distraerte.'\n"
+                "3. CTA (cierra, últimos 8s): prolonga la experiencia, "
+                "NUNCA 'suscríbete' ni un CTA genérico. Ejemplos de tono "
+                "(variar siempre, nunca repetir literal): 'Hay otro "
+                "universo esperando.' 'Continúa el viaje en NØBØĐ¥.' 'La "
+                "música continúa.' 'Entra al siguiente universo sonoro.'\n\n"
+                "Además elegís una selección de video de stock que capture "
+                "el mood específico de ESA canción, no una fórmula genérica "
+                "de género. Evita repetir la misma idea visual entre las "
+                "búsquedas — cada una debe aportar una imagen distinta. "
+                "Preferí escenas luminosas y con movimiento visible (nada de "
                 "fondos negros o casi estáticos) — el video es el fondo de un "
                 "reel vertical y tiene que sostener la atención.\n\n"
                 "Responde ÚNICAMENTE el JSON crudo, sin bloque de código markdown "
                 "(nada de ```), sin texto antes ni después. Estructura EXACTA, "
                 "sin excederla:\n"
                 '{"hook": "máximo 6 palabras en español, sin punto final", '
+                '"body": "una frase, máximo 14 palabras en español", '
+                '"cta": "una frase, máximo 8 palabras en español", '
                 '"clip_queries": ["query 1", "query 2", "query 3"], '
                 '"mood": "una palabra"}\n'
                 "clip_queries debe tener EXACTAMENTE 3 elementos, cada uno una "
@@ -165,14 +196,16 @@ def _creative_brief(track_row, album_row) -> dict:
             text = text.split("```")[1]
             text = text[4:] if text.startswith("json") else text
         brief = json.loads(text.strip())
-        if not brief.get("clip_queries"):
-            raise ValueError("brief sin clip_queries")
+        if not brief.get("clip_queries") or not brief.get("cta"):
+            raise ValueError("brief incompleto (falta clip_queries o cta)")
         brief["source"] = "claude"
         return brief
     except Exception:
         fallback_query = GENRE_TO_STOCK_QUERY.get(album_row["genre_tag"], DEFAULT_STOCK_QUERY)
         return {
             "hook": track_row["title"],
+            "body": "Un momento para escuchar, nada más.",
+            "cta": "La música continúa en NØBØĐ¥.",
             "clip_queries": [fallback_query],
             "mood": album_row["genre_tag"] or "ambient",
             "source": "fallback",
@@ -320,14 +353,17 @@ def extract_thumbnail(video_path: Path, at_seconds: float | None = None) -> Path
 
 HOOK_WINDOW = 4  # segundos que dura el hook de apertura
 CTA_WINDOW = 8  # segundos finales reservados para el CTA
+BODY_WINDOW = 6  # segundos que dura el cuerpo/historia, centrado en el reel
 
 
 def generate_reel(track_row, album_row) -> ContentItem:
     """Reel vertical 1080x1920 de REEL_DURATION segundos: montaje de varios
     clips de stock elegidos por el CEO como curador para esta canción
-    específica (brief vía Claude, ver _creative_brief), hook al abrir,
-    CTA al cerrar, waveform del audio real de fondo. `track_row`/
-    `album_row` son sqlite3.Row de brain.catalogue.store."""
+    específica (brief vía Claude, ver _creative_brief), waveform del
+    audio real de fondo, y una historia de tres actos en pantalla — hook
+    al abrir, cuerpo (micro-intención) al centro, CTA que cierra la
+    historia al final (decisión 2026-08-26, ver _creative_brief).
+    `track_row`/`album_row` son sqlite3.Row de brain.catalogue.store."""
     item_id = f"reel-{track_row['id'].replace('/', '-')}-{uuid.uuid4().hex[:6]}"
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RENDER_DIR / f"{item_id}.mp4"
@@ -341,18 +377,30 @@ def generate_reel(track_row, album_row) -> ContentItem:
     clips = [path for path, _pexels_id in clip_results]
 
     font = _ffmpeg_font_path()
-    hook = _escape_drawtext(brief.get("hook") or track_row["title"])
-    cta = _escape_drawtext(CTA_TEXT)
+    hook_raw = brief.get("hook") or track_row["title"]
+    body_raw = brief.get("body") or ""
+    cta_raw = brief.get("cta") or "La música continúa en NØBØĐ¥."
+    hook = _escape_drawtext(hook_raw)
+    body_text = _escape_drawtext(body_raw)
+    cta = _escape_drawtext(cta_raw)
+    body_start = (REEL_DURATION - BODY_WINDOW) / 2
+    body_end = body_start + BODY_WINDOW
     hook_block = (
         f"drawtext=fontfile='{font}':text='{hook}':fontcolor=white:fontsize=52:"
         f"box=1:boxcolor=black@0.45:boxborderw=16:x=(w-text_w)/2:y=(h-text_h)/2:"
         f"enable='between(t\\,0\\,{HOOK_WINDOW})'"
+    )
+    body_block = (
+        f"drawtext=fontfile='{font}':text='{body_text}':fontcolor=white:fontsize=38:"
+        f"box=1:boxcolor=black@0.4:boxborderw=14:x=(w-text_w)/2:y=(h-text_h)/2:"
+        f"enable='between(t\\,{body_start}\\,{body_end})'"
     )
     cta_block = (
         f"drawtext=fontfile='{font}':text='{cta}':fontcolor=white:fontsize=40:"
         f"box=1:boxcolor=black@0.5:boxborderw=18:x=(w-text_w)/2:y=H-280:"
         f"enable='gte(t\\,{REEL_DURATION - CTA_WINDOW})'"
     )
+    story_blocks = f"{hook_block},{body_block},{cta_block}"
 
     if clips:
         # Montaje de varios clips distintos — no un solo loop estático.
@@ -374,7 +422,7 @@ def generate_reel(track_row, album_row) -> ContentItem:
         concat_labels = "".join(f"[c{i}]" for i in range(len(clips)))
         art_block = (
             f"{scaled}{concat_labels}concat=n={len(clips)}:v=1:a=0,"
-            f"{hook_block},{cta_block}[art]"
+            f"{story_blocks}[art]"
         )
         bg_input = clip_inputs
         audio_input_index = len(clips)
@@ -384,13 +432,13 @@ def generate_reel(track_row, album_row) -> ContentItem:
             f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,boxblur=10:10,eq=brightness=-0.18[bgblur];"
             f"[0:v]scale=980:980[fg];"
-            f"[bgblur][fg]overlay=(W-w)/2:(H-h)/2-60,{hook_block},{cta_block}[art]"
+            f"[bgblur][fg]overlay=(W-w)/2:(H-h)/2-60,{story_blocks}[art]"
         )
         audio_input_index = 1
     else:
-        # Sin portada ni stock: tarjeta de marca con el hook.
+        # Sin portada ni stock: tarjeta de marca con la historia.
         bg_input = ["-f", "lavfi", "-i", f"color=c={FALLBACK_BG_COLOR}:s=1080x1920"]
-        art_block = f"[0:v]{hook_block},{cta_block}[art]"
+        art_block = f"[0:v]{story_blocks}[art]"
         audio_input_index = 1
 
     filter_complex = (
@@ -445,9 +493,10 @@ def generate_reel(track_row, album_row) -> ContentItem:
         conn,
         CreativeBrief(
             content_item_id=item_id,
-            hook=brief.get("hook"),
+            hook=hook_raw,
+            body=body_raw,
             mood=brief.get("mood"),
-            cta=CTA_TEXT,
+            cta=cta_raw,  # sin escapar — el escapado es solo para el filtro de ffmpeg
             structure_json=json.dumps(
                 {"clip_queries": brief["clip_queries"], "segment_count": len(clips)},
                 ensure_ascii=False,

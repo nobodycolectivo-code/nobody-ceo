@@ -28,4 +28,21 @@ def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(schema)
+    _apply_migrations(conn)
     conn.commit()
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """CREATE TABLE IF NOT EXISTS no altera una tabla que ya existe — si
+    una tabla ya desplegada necesita una columna nueva, hace falta un
+    ALTER TABLE explícito acá, guardado con un chequeo de
+    PRAGMA table_info (SQLite no tiene ADD COLUMN IF NOT EXISTS, y esto
+    corre en cada connect() — sin el chequeo, la segunda ejecución
+    rompería con "duplicate column name")."""
+    def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+    # 2026-08-26 — Creative QA Fase 1, estructura de tres actos (hook/body/cta)
+    _add_column_if_missing("creative_briefs", "body", "body TEXT")

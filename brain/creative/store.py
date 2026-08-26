@@ -16,6 +16,7 @@ class CreativeBrief:
     structure_json: str
     source: str  # claude | fallback
     hook: str | None = None
+    body: str | None = None
     mood: str | None = None
     cta: str | None = None
 
@@ -24,15 +25,16 @@ def record_brief(conn: sqlite3.Connection, brief: CreativeBrief) -> None:
     conn.execute(
         """
         INSERT INTO creative_briefs
-            (content_item_id, hook, mood, cta, structure_json, source)
-        VALUES (:content_item_id, :hook, :mood, :cta, :structure_json, :source)
+            (content_item_id, hook, body, mood, cta, structure_json, source)
+        VALUES (:content_item_id, :hook, :body, :mood, :cta, :structure_json, :source)
         ON CONFLICT(content_item_id) DO UPDATE SET
-            hook = excluded.hook, mood = excluded.mood, cta = excluded.cta,
-            structure_json = excluded.structure_json, source = excluded.source
+            hook = excluded.hook, body = excluded.body, mood = excluded.mood,
+            cta = excluded.cta, structure_json = excluded.structure_json,
+            source = excluded.source
         """,
         {
             "content_item_id": brief.content_item_id, "hook": brief.hook,
-            "mood": brief.mood, "cta": brief.cta,
+            "body": brief.body, "mood": brief.mood, "cta": brief.cta,
             "structure_json": brief.structure_json, "source": brief.source,
         },
     )

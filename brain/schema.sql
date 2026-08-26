@@ -227,8 +227,9 @@ CREATE TABLE IF NOT EXISTS content_items (
 CREATE TABLE IF NOT EXISTS creative_briefs (
     content_item_id  TEXT PRIMARY KEY REFERENCES content_items(id),
     hook             TEXT,
+    body             TEXT,             -- micro-intención del acto central (2026-08-26)
     mood             TEXT,
-    cta              TEXT,
+    cta              TEXT,             -- generado por pieza, nunca "suscríbete" (2026-08-26)
     structure_json   TEXT NOT NULL,   -- clip_queries, segment_dur, etc. — JSON
     source           TEXT NOT NULL,   -- claude | fallback
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))

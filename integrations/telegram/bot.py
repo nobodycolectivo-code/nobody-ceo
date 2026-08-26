@@ -224,6 +224,8 @@ async def _send_reel_approval_requests(send_video, result: dict) -> None:
             caption_lines = ["🎬 Reel pendiente de aprobación", "", item["title"] or ""]
             if brief and brief["hook"]:
                 caption_lines.append(f"Hook: {brief['hook']}")
+            if brief and brief["body"]:
+                caption_lines.append(f"Cuerpo: {brief['body']}")
             if brief and brief["cta"]:
                 caption_lines.append(f"CTA: {brief['cta']}")
             caption = "\n".join(caption_lines)[:1024]
