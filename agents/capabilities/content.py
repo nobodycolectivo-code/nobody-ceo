@@ -39,6 +39,7 @@ DEFAULT_FONT_PATH = REPO_ROOT / "assets" / "fonts" / "Inter-Regular.ttf"
 RENDER_DIR = Path(os.environ.get("NOBODY_RENDER_DIR", "render_output"))
 STOCK_CACHE_DIR = RENDER_DIR / "stock_cache"
 REEL_DURATION = 45  # segundos, formato short/reel
+TELEGRAM_MAX_UPLOAD_BYTES = 45_000_000  # límite real de Telegram Bot API ~50MB, con margen
 CLAUDE_MODEL = "claude-sonnet-5"
 
 FALLBACK_BG_COLOR = "0x1b1d1c"  # coherente con el neutro del resto del proyecto
@@ -484,6 +485,12 @@ def generate_reel(track_row, album_row) -> ContentItem:
     # frame=0 sin fallar limpio (visto en producción, reproducible con
     # varios clips distintos). Limitarlo explícitamente es la forma
     # estándar de evitar ese problema conocido de ffmpeg en contenedores.
+    # -crf/-maxrate/-bufsize: sin tope, un clip de stock con mucho
+    # movimiento/detalle puede llegar a 60-80MB para 45 segundos (visto en
+    # producción, 2026-08-26) — Telegram rechaza el envío del video de
+    # aprobación por encima de ~50MB ("Request Entity Too Large"), y el
+    # reel queda pending_review sin forma de mostrarse nunca. El tope deja
+    # margen amplio bajo TELEGRAM_MAX_UPLOAD_BYTES sin importar el clip.
     cmd = [
         "ffmpeg", "-y", "-threads", "2", "-filter_threads", "2",
         *bg_input,
@@ -493,10 +500,26 @@ def generate_reel(track_row, album_row) -> ContentItem:
         "-map", "[vout]", "-map", f"{audio_input_index}:a",
         "-r", "30",
         "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-pix_fmt", "yuv420p",
+        "-crf", "24", "-maxrate", "3000k", "-bufsize", "6000k",
         "-c:a", "aac", "-shortest", str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     ok = result.returncode == 0 and out_path.exists()
+
+    # Chequeo de tamaño real como red de seguridad además del tope de
+    # bitrate — si por lo que sea el archivo igual queda muy grande para
+    # que Telegram lo mande, mejor marcarlo failed acá (razón clara,
+    # reintentable) que dejarlo pending_review sin poder mostrarse nunca.
+    if ok and out_path.stat().st_size > TELEGRAM_MAX_UPLOAD_BYTES:
+        size_mb = out_path.stat().st_size / 1e6
+        ok = False
+        oversized_error = (
+            f"Render de {size_mb:.1f}MB supera el límite de envío de Telegram "
+            f"(~{TELEGRAM_MAX_UPLOAD_BYTES / 1e6:.0f}MB) — no se puede mandar para aprobación."
+        )
+        out_path.unlink(missing_ok=True)
+    else:
+        oversized_error = None
 
     meta = _metadata(
         f"Álbum: {album_row['title']}. Canción: {track_row['title']}. "
@@ -512,7 +535,7 @@ def generate_reel(track_row, album_row) -> ContentItem:
         id=item_id, kind="reel", source_type="track", source_id=track_row["id"],
         title=title, description=description,
         status="rendered" if ok else "failed",
-        error=None if ok else _summarize_ffmpeg_error(result.stderr),
+        error=oversized_error if oversized_error else (None if ok else _summarize_ffmpeg_error(result.stderr)),
         render_path=str(out_path) if out_path.exists() else None,
     )
 
